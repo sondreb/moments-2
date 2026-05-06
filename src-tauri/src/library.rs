@@ -5,11 +5,14 @@ use std::{
     sync::Mutex,
 };
 
-use crate::models::{LibraryOverview, LibraryRoot, LibraryRootStatus, ScanStats};
+use crate::models::{
+    LibraryOverview, LibraryRoot, LibraryRootStatus, MediaItem, MediaType, ScanStats,
+};
 
 #[derive(Default)]
 pub struct LibraryState {
     roots: Mutex<Vec<LibraryRoot>>,
+    media_items: Mutex<Vec<MediaItem>>,
 }
 
 impl LibraryState {
@@ -31,6 +34,8 @@ impl LibraryState {
             path: normalized_path,
             status: LibraryRootStatus::Ready,
             photo_count: 0,
+            video_count: 0,
+            media_count: 0,
         };
 
         roots.push(root.clone());
@@ -52,6 +57,8 @@ impl LibraryState {
         Ok(LibraryOverview {
             root_count: roots.len(),
             photo_count: roots.iter().map(|root| root.photo_count).sum(),
+            video_count: roots.iter().map(|root| root.video_count).sum(),
+            media_count: roots.iter().map(|root| root.media_count).sum(),
         })
     }
 
@@ -69,7 +76,9 @@ impl LibraryState {
         Ok(PathBuf::from(&root.path))
     }
 
-    pub fn finish_scan(&self, stats: &ScanStats) -> Result<(), String> {
+    pub fn finish_scan(&self, result: ScanResult) -> Result<ScanStats, String> {
+        let stats = result.stats;
+
         let mut roots = self
             .roots
             .lock()
@@ -81,6 +90,46 @@ impl LibraryState {
 
         root.status = LibraryRootStatus::Ready;
         root.photo_count = stats.photo_count;
+        root.video_count = stats.video_count;
+        root.media_count = stats.media_count;
+        drop(roots);
+
+        let mut media_items = self
+            .media_items
+            .lock()
+            .map_err(|_| "library media state is unavailable")?;
+        media_items.retain(|item| item.root_id != stats.root_id);
+        media_items.extend(result.items);
+
+        Ok(stats)
+    }
+
+    pub fn media(
+        &self,
+        root_id: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<MediaItem>, String> {
+        let media_items = self
+            .media_items
+            .lock()
+            .map_err(|_| "library media state is unavailable")?;
+
+        Ok(media_items
+            .iter()
+            .filter(|item| item.root_id == root_id)
+            .skip(offset)
+            .take(limit)
+            .cloned()
+            .collect())
+    }
+
+    pub fn clear_media(&self, root_id: &str) -> Result<(), String> {
+        let mut media_items = self
+            .media_items
+            .lock()
+            .map_err(|_| "library media state is unavailable")?;
+        media_items.retain(|item| item.root_id != root_id);
         Ok(())
     }
 
@@ -96,10 +145,17 @@ impl LibraryState {
     }
 }
 
-pub fn scan_root(root_id: String, root_path: PathBuf) -> Result<ScanStats, String> {
+pub struct ScanResult {
+    stats: ScanStats,
+    items: Vec<MediaItem>,
+}
+
+pub fn scan_root(root_id: String, root_path: PathBuf) -> Result<ScanResult, String> {
     let mut pending = VecDeque::from([root_path]);
     let mut photo_count = 0;
+    let mut video_count = 0;
     let mut skipped_count = 0;
+    let mut items = Vec::new();
 
     while let Some(path) = pending.pop_front() {
         let Ok(entries) = fs::read_dir(&path) else {
@@ -112,18 +168,40 @@ pub fn scan_root(root_id: String, root_path: PathBuf) -> Result<ScanStats, Strin
 
             if path.is_dir() {
                 pending.push_back(path);
-            } else if is_supported_image(&path) {
-                photo_count += 1;
+            } else if let Some(media_type) = media_type_for_path(&path) {
+                match media_type {
+                    MediaType::Photo => photo_count += 1,
+                    MediaType::Video => video_count += 1,
+                }
+
+                items.push(MediaItem {
+                    id: String::new(),
+                    root_id: root_id.clone(),
+                    name: display_name(&path.to_string_lossy()),
+                    path: path.to_string_lossy().to_string(),
+                    media_type,
+                });
             } else {
                 skipped_count += 1;
             }
         }
     }
 
-    Ok(ScanStats {
-        root_id,
-        photo_count,
-        skipped_count,
+    items.sort_by(|first, second| first.path.cmp(&second.path));
+
+    for (index, item) in items.iter_mut().enumerate() {
+        item.id = format!("{}-media-{}", root_id, index + 1);
+    }
+
+    Ok(ScanResult {
+        stats: ScanStats {
+            root_id,
+            photo_count,
+            video_count,
+            media_count: photo_count + video_count,
+            skipped_count,
+        },
+        items,
     })
 }
 
@@ -158,5 +236,37 @@ fn is_supported_image(path: &Path) -> bool {
     matches!(
         extension.to_ascii_lowercase().as_str(),
         "jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp" | "tif" | "tiff" | "heic" | "heif" | "avif"
+    )
+}
+
+fn media_type_for_path(path: &Path) -> Option<MediaType> {
+    if is_supported_image(path) {
+        Some(MediaType::Photo)
+    } else if is_supported_video(path) {
+        Some(MediaType::Video)
+    } else {
+        None
+    }
+}
+
+fn is_supported_video(path: &Path) -> bool {
+    let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
+        return false;
+    };
+
+    matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "mp4"
+            | "mov"
+            | "m4v"
+            | "avi"
+            | "mkv"
+            | "webm"
+            | "wmv"
+            | "mpg"
+            | "mpeg"
+            | "3gp"
+            | "mts"
+            | "m2ts"
     )
 }

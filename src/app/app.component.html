@@ -4,7 +4,7 @@
       <div class="brand-mark" aria-hidden="true">M</div>
       <div>
         <h1>Moments</h1>
-        <p>{{ overview().rootCount }} folders · {{ totalPhotos() }} photos</p>
+        <p>{{ overview().rootCount }} folders · {{ totalMedia() }} media</p>
       </div>
     </div>
 
@@ -24,7 +24,7 @@
         <span class="folder-icon" aria-hidden="true"></span>
         <span class="folder-copy">
           <strong>{{ root.name }}</strong>
-          <small>{{ root.photoCount | number }} photos</small>
+          <small>{{ root.mediaCount | number }} media</small>
         </span>
         <span class="status-dot" [class.scanning]="root.status === 'scanning'" [class.error]="root.status === 'error'"></span>
       </button>
@@ -47,22 +47,44 @@
 
     <p class="error-banner" *ngIf="errorMessage()">{{ errorMessage() }}</p>
 
-    <section class="gallery-stage" aria-label="Photos">
+    <section class="gallery-stage" aria-label="Media">
       <div class="empty-state" *ngIf="roots().length === 0">
         <h3>Your library is empty</h3>
         <button class="primary-action compact" type="button" (click)="addFolder()">Add folder</button>
       </div>
 
       <div class="scan-summary" *ngIf="lastScan() as scan">
-        <strong>{{ scan.photoCount | number }}</strong>
-        <span>photos indexed</span>
-        <small>{{ scan.skippedCount | number }} other files skipped</small>
+        <strong>{{ scan.mediaCount | number }}</strong>
+        <span>media indexed</span>
+        <small>{{ scan.photoCount | number }} photos · {{ scan.videoCount | number }} videos · {{ scan.skippedCount | number }} other files skipped</small>
       </div>
 
-      <div class="photo-grid" *ngIf="selectedRoot() as root">
-        <div class="photo-tile" *ngFor="let tile of [].constructor(24); let index = index">
-          <span>{{ index + 1 }}</span>
+      <div class="media-overview" *ngIf="selectedRoot() as root">
+        <div class="media-stat">
+          <strong>{{ root.mediaCount | number }}</strong>
+          <span>Media</span>
         </div>
+        <div class="media-stat">
+          <strong>{{ root.photoCount | number }}</strong>
+          <span>Photos</span>
+        </div>
+        <div class="media-stat">
+          <strong>{{ root.videoCount | number }}</strong>
+          <span>Videos</span>
+        </div>
+      </div>
+
+      <div class="gallery-loading" *ngIf="isLoadingMedia()">Loading media...</div>
+
+      <div class="media-grid" *ngIf="mediaItems().length > 0">
+        <figure class="media-tile" *ngFor="let item of mediaItems()">
+          <img *ngIf="item.mediaType === 'photo'" [src]="mediaUrl(item)" [alt]="item.name" title="Photo thumbnail" loading="lazy" />
+          <video *ngIf="item.mediaType === 'video'" [src]="mediaUrl(item)" preload="metadata" muted></video>
+          <figcaption>
+            <span class="media-kind">{{ item.mediaType }}</span>
+            <strong>{{ item.name }}</strong>
+          </figcaption>
+        </figure>
       </div>
     </section>
   </section>
@@ -80,8 +102,16 @@
         <dd>{{ selectedRootStatus() }}</dd>
       </div>
       <div>
-        <dt>Indexed photos</dt>
+        <dt>Indexed media</dt>
+        <dd>{{ selectedRootMediaCount() | number }}</dd>
+      </div>
+      <div>
+        <dt>Photos</dt>
         <dd>{{ selectedRootPhotoCount() | number }}</dd>
+      </div>
+      <div>
+        <dt>Videos</dt>
+        <dd>{{ selectedRootVideoCount() | number }}</dd>
       </div>
     </dl>
   </aside>

@@ -2,7 +2,7 @@ use tauri::State;
 
 use crate::{
     library::{scan_root, LibraryState},
-    models::{LibraryOverview, LibraryRoot, ScanStats},
+    models::{LibraryOverview, LibraryRoot, MediaItem, ScanStats},
 };
 
 #[tauri::command]
@@ -24,6 +24,16 @@ pub fn library_overview(state: State<'_, LibraryState>) -> Result<LibraryOvervie
 }
 
 #[tauri::command]
+pub fn get_library_media(
+    root_id: String,
+    offset: usize,
+    limit: usize,
+    state: State<'_, LibraryState>,
+) -> Result<Vec<MediaItem>, String> {
+    state.media(&root_id, offset, limit)
+}
+
+#[tauri::command]
 pub async fn scan_library_root(
     root_id: String,
     state: State<'_, LibraryState>,
@@ -36,12 +46,10 @@ pub async fn scan_library_root(
         .map_err(|error| format!("scan task failed: {error}"))?;
 
     match stats {
-        Ok(stats) => {
-            state.finish_scan(&stats)?;
-            Ok(stats)
-        }
+        Ok(stats) => state.finish_scan(stats),
         Err(error) => {
             state.fail_scan(&root_id)?;
+            state.clear_media(&root_id)?;
             Err(error)
         }
     }

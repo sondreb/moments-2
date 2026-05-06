@@ -8,6 +8,25 @@ pub struct LibraryRoot {
     pub path: String,
     pub status: LibraryRootStatus,
     pub photo_count: u64,
+    pub video_count: u64,
+    pub media_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaItem {
+    pub id: String,
+    pub root_id: String,
+    pub name: String,
+    pub path: String,
+    pub media_type: MediaType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MediaType {
+    Photo,
+    Video,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,6 +42,8 @@ pub enum LibraryRootStatus {
 pub struct ScanStats {
     pub root_id: String,
     pub photo_count: u64,
+    pub video_count: u64,
+    pub media_count: u64,
     pub skipped_count: u64,
 }
 
@@ -31,4 +52,6 @@ pub struct ScanStats {
 pub struct LibraryOverview {
     pub root_count: usize,
     pub photo_count: u64,
+    pub video_count: u64,
+    pub media_count: u64,
 }

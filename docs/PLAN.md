@@ -1,11 +1,11 @@
 # Moments Plan
 
-Moments is a high-performance desktop image viewer for people with very large local photo collections. The app should make hundreds of thousands of photos feel immediate by indexing once, doing heavy work in Rust, and keeping the Angular UI focused on paged and virtualized views.
+Moments is a high-performance desktop viewer for people with very large local photo and video collections. The app should make hundreds of thousands of media files feel immediate by indexing once, doing heavy work in Rust, and keeping the Angular UI focused on paged and virtualized views.
 
 ## Product Goals
 
 - Add and manage multiple local folder roots.
-- Index photos without copying or owning the original files.
+- Index photos and videos without copying or owning the original files.
 - Scroll large libraries smoothly with virtualized rendering.
 - Generate and cache thumbnails in the background.
 - Show metadata and EXIF details in an inspector.
@@ -16,8 +16,8 @@ Moments is a high-performance desktop image viewer for people with very large lo
 - Tauri 2 desktop shell with Angular frontend.
 - Folder picker for adding library roots.
 - Rust commands for adding, listing, and scanning roots.
-- Basic photo count scan for common image extensions.
-- App shell with sidebar, gallery workspace, and inspector.
+- Basic media count scan for common image and video extensions.
+- App shell with sidebar, gallery workspace, inspector, and real local media thumbnails.
 
 ## Later Scope
 
@@ -49,6 +49,7 @@ Moments is a high-performance desktop image viewer for people with very large lo
 ## Acceptance Criteria
 
 - The app can add more than one folder root.
+- Scans count supported photos and videos separately.
 - Scans do not freeze the Angular renderer.
 - Large result sets are paged across the Tauri boundary.
 - Thumbnail files are cached outside SQLite.

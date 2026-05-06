@@ -10,6 +10,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             commands::add_library_root,
+            commands::get_library_media,
             commands::list_library_roots,
             commands::scan_library_root,
             commands::library_overview

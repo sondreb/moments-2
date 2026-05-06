@@ -1,8 +1,8 @@
 # Moments
 
-Moments is a native desktop image viewer for very large local photo libraries. It is built with Rust, Tauri, and Angular so filesystem scanning, indexing, and thumbnail work can run natively while the interface stays fast and focused.
+Moments is a native desktop viewer for very large local photo and video libraries. It is built with Rust, Tauri, and Angular so filesystem scanning, indexing, and thumbnail work can run natively while the interface stays fast and focused.
 
-The first implementation slice supports adding multiple folders, keeping an in-memory library root list, and scanning selected folders for supported image files.
+The first implementation slice supports adding multiple folders, keeping an in-memory library root list, scanning selected folders for supported media files, and rendering real local photo/video thumbnails in the gallery.
 
 ## Development
 

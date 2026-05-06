@@ -239,21 +239,81 @@ dd {
   font-size: 24px;
 }
 
-.photo-grid {
+.media-overview {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  gap: 14px;
+  margin-bottom: 22px;
 }
 
-.photo-tile {
-  aspect-ratio: 1;
+.media-stat {
+  min-height: 112px;
   display: grid;
-  place-items: end start;
-  padding: 10px;
+  align-content: end;
+  gap: 4px;
+  padding: 16px;
   border-radius: 8px;
-  background: linear-gradient(135deg, #243b53, #66788a 52%, #f7c948);
-  color: #fff;
+  border: 1px solid #ded8cc;
+  background: #fffdf8;
+}
+
+.media-stat strong {
+  font-size: 28px;
+  line-height: 1;
+}
+
+.media-stat span {
+  color: #6b7280;
+  font-weight: 700;
+}
+
+.gallery-loading {
+  color: #6b7280;
+  font-weight: 700;
+}
+
+.media-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 14px;
+}
+
+.media-tile {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  border-radius: 8px;
+  border: 1px solid #ded8cc;
+  background: #fffdf8;
+}
+
+.media-tile img,
+.media-tile video {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  display: block;
+  background: #d2d6dc;
+  object-fit: cover;
+}
+
+.media-tile figcaption {
+  min-height: 50px;
+  display: grid;
+  gap: 2px;
+  padding: 9px 10px 10px;
+}
+
+.media-kind {
+  color: #6b7280;
+  font-size: 11px;
   font-weight: 800;
+  text-transform: uppercase;
+}
+
+.media-tile strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 dl {

@@ -10,7 +10,7 @@ Angular UI
 Rust backend
   -> library roots, scanner, index, thumbnail cache, metadata workers
 Local disk
-  -> original photos, SQLite index, generated thumbnails
+  -> original photos and videos, SQLite index, generated thumbnails
 ```
 
 The app should avoid loading the whole library into memory or sending huge arrays across IPC. Angular requests visible slices; Rust owns indexing, query planning, and file operations.
@@ -56,7 +56,7 @@ Current shape:
 
 - Sidebar for library roots.
 - Toolbar for the selected root.
-- Gallery workspace with placeholder tiles.
+- Gallery workspace with indexed media totals and real local photo/video thumbnails.
 - Inspector for selected root details.
 
 Planned structure:
@@ -76,13 +76,13 @@ Angular Signals should remain the default state primitive until the app has enou
 
 ## Storage Model
 
-SQLite should store library roots, folders, photos, metadata, tags, thumbnail status, and rename history. Thumbnail image bytes should live on disk in an app data cache folder.
+SQLite should store library roots, folders, media files, metadata, tags, thumbnail status, and rename history. Thumbnail image bytes should live on disk in an app data cache folder.
 
 Initial tables:
 
 - `library_roots`
 - `folders`
-- `photos`
+- `media_files`
 - `photo_metadata`
 - `thumbnail_jobs`
 - `tags`
@@ -93,6 +93,7 @@ Initial tables:
 ## Performance Rules
 
 - Index file records before metadata and thumbnails.
+- Track media type so photos and videos can share gallery infrastructure without losing type-specific behavior.
 - Use background workers for expensive filesystem and image operations.
 - Page all gallery queries.
 - Keep thumbnail cache names deterministic.
@@ -101,4 +102,4 @@ Initial tables:
 
 ## Multi-Folder Library
 
-Each folder root is an independent source. A single app library can contain many roots, and future SQLite records should keep `root_id` on folder and photo rows so the app can rescan or remove one root without touching the others.
+Each folder root is an independent source. A single app library can contain many roots, and future SQLite records should keep `root_id` on folder and media rows so the app can rescan or remove one root without touching the others.
