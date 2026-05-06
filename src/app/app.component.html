@@ -1,0 +1,88 @@
+<main class="app-shell">
+  <aside class="sidebar" aria-label="Library folders">
+    <div class="brand-block">
+      <div class="brand-mark" aria-hidden="true">M</div>
+      <div>
+        <h1>Moments</h1>
+        <p>{{ overview().rootCount }} folders · {{ totalPhotos() }} photos</p>
+      </div>
+    </div>
+
+    <button class="primary-action" type="button" (click)="addFolder()" [disabled]="isAddingFolder()">
+      <span aria-hidden="true">+</span>
+      Add folder
+    </button>
+
+    <nav class="folder-list" aria-label="Folders">
+      <button
+        *ngFor="let root of roots()"
+        class="folder-row"
+        type="button"
+        [class.active]="isSelected(root)"
+        (click)="selectRoot(root)"
+      >
+        <span class="folder-icon" aria-hidden="true"></span>
+        <span class="folder-copy">
+          <strong>{{ root.name }}</strong>
+          <small>{{ root.photoCount | number }} photos</small>
+        </span>
+        <span class="status-dot" [class.scanning]="root.status === 'scanning'" [class.error]="root.status === 'error'"></span>
+      </button>
+    </nav>
+  </aside>
+
+  <section class="workspace" aria-label="Gallery workspace">
+    <header class="toolbar">
+      <div>
+        <p class="eyebrow">Library</p>
+        <h2>{{ selectedRootName() }}</h2>
+      </div>
+
+      <div class="toolbar-actions">
+        <button class="ghost-action" type="button" [disabled]="!selectedRoot()" (click)="selectedRoot() && scanRoot(selectedRoot()!)">
+          Rescan
+        </button>
+      </div>
+    </header>
+
+    <p class="error-banner" *ngIf="errorMessage()">{{ errorMessage() }}</p>
+
+    <section class="gallery-stage" aria-label="Photos">
+      <div class="empty-state" *ngIf="roots().length === 0">
+        <h3>Your library is empty</h3>
+        <button class="primary-action compact" type="button" (click)="addFolder()">Add folder</button>
+      </div>
+
+      <div class="scan-summary" *ngIf="lastScan() as scan">
+        <strong>{{ scan.photoCount | number }}</strong>
+        <span>photos indexed</span>
+        <small>{{ scan.skippedCount | number }} other files skipped</small>
+      </div>
+
+      <div class="photo-grid" *ngIf="selectedRoot() as root">
+        <div class="photo-tile" *ngFor="let tile of [].constructor(24); let index = index">
+          <span>{{ index + 1 }}</span>
+        </div>
+      </div>
+    </section>
+  </section>
+
+  <aside class="inspector" aria-label="Inspector">
+    <p class="eyebrow">Inspector</p>
+    <h2>{{ selectedRootName() === "No folder selected" ? "Library" : selectedRootName() }}</h2>
+    <dl>
+      <div>
+        <dt>Path</dt>
+        <dd>{{ selectedRootPath() }}</dd>
+      </div>
+      <div>
+        <dt>Status</dt>
+        <dd>{{ selectedRootStatus() }}</dd>
+      </div>
+      <div>
+        <dt>Indexed photos</dt>
+        <dd>{{ selectedRootPhotoCount() | number }}</dd>
+      </div>
+    </dl>
+  </aside>
+</main>
