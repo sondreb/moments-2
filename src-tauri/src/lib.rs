@@ -19,6 +19,34 @@ pub fn run() {
             {
                 let _ = state.hydrate(roots, media_items, metadata, faces);
             }
+
+            if let Ok(samples_path) = services::ensure_samples_directory(&app.handle()) {
+                if let Ok(root) = state.add_root(samples_path.to_string_lossy().to_string()) {
+                    let _ = services::record_root(&app.handle(), &root.id, &root.name, &root.path);
+                    if let Ok(scan_result) =
+                        library::scan_root(root.id.clone(), std::path::PathBuf::from(&root.path))
+                    {
+                        if let Ok(stats) = state.finish_scan(scan_result) {
+                            if let Ok(media) = state.media(&stats.root_id, 0, usize::MAX) {
+                                let payload = media
+                                    .into_iter()
+                                    .map(|item| {
+                                        (
+                                            item.id,
+                                            item.name,
+                                            item.path,
+                                            format!("{:?}", item.media_type).to_ascii_lowercase(),
+                                            item.content_hash,
+                                        )
+                                    })
+                                    .collect::<Vec<_>>();
+                                let _ =
+                                    services::record_media(&app.handle(), &stats.root_id, &payload);
+                            }
+                        }
+                    }
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -34,6 +62,7 @@ pub fn run() {
             commands::list_ai_models,
             commands::list_library_roots,
             commands::open_media_path,
+            commands::show_media_in_explorer,
             commands::remove_library_root,
             commands::rename_root_media_by_date,
             commands::scan_library_root,

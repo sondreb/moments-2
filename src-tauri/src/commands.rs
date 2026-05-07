@@ -234,6 +234,15 @@ pub fn open_media_path(media_id: String, state: State<'_, LibraryState>) -> Resu
 }
 
 #[tauri::command]
+pub fn show_media_in_explorer(
+    media_id: String,
+    state: State<'_, LibraryState>,
+) -> Result<(), String> {
+    let path = normalize_for_native_open(state.media_path(&media_id)?)?;
+    open_in_file_explorer(&path)
+}
+
+#[tauri::command]
 pub async fn scan_library_root(
     root_id: String,
     state: State<'_, LibraryState>,
@@ -392,6 +401,26 @@ fn open_with_default_app(path: &PathBuf) -> Result<(), String> {
             .success()
             .then_some(())
             .ok_or_else(|| "native viewer returned an error".to_string())
+    }
+}
+
+fn open_in_file_explorer(path: &PathBuf) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer.exe")
+            .arg("/select,")
+            .arg(path)
+            .spawn()
+            .map_err(|error| format!("failed to show media in File Explorer: {error}"))?;
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let parent = path
+            .parent()
+            .ok_or_else(|| "media path does not have a parent directory".to_string())?;
+        open_with_default_app(&parent.to_path_buf())
     }
 }
 

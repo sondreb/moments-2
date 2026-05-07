@@ -146,13 +146,14 @@
           </div>
         </div>
 
-        <div class="viewer-surface" [class.video-surface]="item.mediaType === 'video'" [class.zoomed]="item.mediaType === 'photo' && zoom() > 100" [class.panning]="isPanning()" (wheel)="handleViewerWheel($event)" (pointerdown)="startPan($event)" (pointermove)="movePan($event)" (pointerup)="endPan($event)" (pointercancel)="endPan($event)" (pointerleave)="endPan($event)">
+        <div class="viewer-surface" [class.video-surface]="item.mediaType === 'video'" [class.zoomed]="item.mediaType === 'photo' && zoom() > 100" [class.panning]="isPanning()" (wheel)="handleViewerWheel($event)" (pointerdown)="startPan($event)" (pointermove)="movePan($event)" (pointerup)="endPan($event)" (pointercancel)="endPan($event)" (pointerleave)="endPan($event)" (contextmenu)="openMediaContextMenu(item, $event)">
           <div class="face-frame" *ngIf="item.mediaType === 'photo'" [ngStyle]="viewerFrameStyle()">
             <img
               [src]="mediaUrl(item)"
               [alt]="item.name"
               title="Selected photo"
               draggable="false"
+              [ngStyle]="selectedImageStyle()"
             />
             <span class="face-box" *ngFor="let face of selectedFaceAnalysis()?.faces" [ngStyle]="faceBoxStyle(face)" [title]="(face.name || 'Face') + ' · ' + (face.confidence | percent)"></span>
           </div>
@@ -247,7 +248,7 @@
             <div class="duplicate-items">
               <label class="duplicate-item" *ngFor="let item of group.items">
                 <input type="checkbox" [checked]="isDuplicateSelected(item.id)" (change)="toggleDuplicateSelection(item.id, $any($event.target).checked)" />
-                <button type="button" (click)="openDuplicateItem(item)">
+                <button type="button" (click)="openDuplicateItem(item)" (contextmenu)="openMediaContextMenu(item, $event)">
                   <img *ngIf="item.mediaType === 'photo'" [src]="mediaUrl(item)" [alt]="item.name" title="Duplicate photo" loading="lazy" />
                   <video *ngIf="item.mediaType === 'video'" [src]="mediaUrl(item)" muted preload="metadata"></video>
                   <span>
@@ -261,7 +262,7 @@
         </section>
 
         <div class="media-grid" [style.--thumb-size.px]="thumbnailSize()" [class.square-mode]="thumbnailLayoutMode() === 'square'" [class.full-mode]="thumbnailLayoutMode() === 'full'" [class.dynamic-mode]="thumbnailLayoutMode() === 'dynamic'" *ngIf="!isDetailOpen() && activeView() !== 'people' && activeView() !== 'duplicates' && activeView() !== 'recents' && activeView() !== 'imports' && visibleMediaItems().length > 0">
-          <figure class="media-tile" *ngFor="let item of visibleMediaItems()" [class.active]="isSelectedMedia(item)" [class.portrait-tile]="thumbnailLayoutMode() === 'dynamic' && isPortraitTile(item)" (click)="selectMedia(item)" (dblclick)="openNative(item)">
+          <figure class="media-tile" *ngFor="let item of visibleMediaItems()" [class.active]="isSelectedMedia(item)" [class.portrait-tile]="thumbnailLayoutMode() === 'dynamic' && isPortraitTile(item)" (click)="selectMedia(item)" (dblclick)="openNative(item)" (contextmenu)="openMediaContextMenu(item, $event)">
             <img *ngIf="item.mediaType === 'photo'" [src]="mediaUrl(item)" [alt]="item.name" title="Photo thumbnail" loading="lazy" (load)="markTileOrientation(item, $event)" />
             <video *ngIf="item.mediaType === 'video'" [src]="mediaUrl(item)" preload="metadata" muted></video>
             <figcaption>
@@ -273,6 +274,11 @@
       </ng-container>
     </section>
   </section>
+
+  <div class="media-context-menu" *ngIf="mediaContextMenu() as menu" [style.left.px]="menu.x" [style.top.px]="menu.y" (click)="keepMediaContextMenuOpen($event)">
+    <button type="button" (click)="openInFileExplorer(menu.item)">Open in File Explorer</button>
+    <button type="button" (click)="openNative(menu.item)">Open native</button>
+  </div>
 
   <aside class="inspector" aria-label="Inspector" *ngIf="inspectorVisible()">
     <header class="inspector-header">

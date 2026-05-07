@@ -28,6 +28,7 @@ const CLASSIFICATION_MODEL_ID: &str = "image-classification-mobilenet-cpu";
 const CLASSIFICATION_GPU_MODEL_ID: &str = "image-classification-mobilenet-gpu";
 const FACE_MODEL_URL: &str = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx";
 const CLASSIFICATION_MODEL_URL: &str = "https://github.com/onnx/models/raw/main/validated/vision/classification/mobilenet/model/mobilenetv2-12.onnx";
+const SAMPLES_DIR_NAME: &str = "Samples";
 
 const MODEL_DEFINITIONS: &[ModelDefinition] = &[
     ModelDefinition {
@@ -383,6 +384,18 @@ pub fn inference_cache_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(cache_dir(app)?.join("inference"))
 }
 
+pub fn ensure_samples_directory(app: &AppHandle) -> Result<PathBuf, String> {
+    let directory = samples_dir(app)?;
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("failed to create samples directory: {error}"))?;
+
+    if let Some(source_dir) = samples_source_dir(app)? {
+        sync_directory_contents(&source_dir, &directory)?;
+    }
+
+    Ok(directory)
+}
+
 fn model_definition(model_id: &str) -> Result<&'static ModelDefinition, String> {
     MODEL_DEFINITIONS
         .iter()
@@ -714,6 +727,30 @@ fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app_data_dir(app)?.join("moments.sqlite3"))
 }
 
+fn samples_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app_data_dir(app)?.join(SAMPLES_DIR_NAME))
+}
+
+fn samples_source_dir(app: &AppHandle) -> Result<Option<PathBuf>, String> {
+    let repo_samples = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("samples");
+    if repo_samples.exists() {
+        return Ok(Some(repo_samples));
+    }
+
+    let resource_samples = app
+        .path()
+        .resource_dir()
+        .map_err(|error| format!("failed to resolve resource directory: {error}"))?
+        .join("samples");
+    if resource_samples.exists() {
+        return Ok(Some(resource_samples));
+    }
+
+    Ok(None)
+}
+
 fn models_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app_data_dir(app)?.join("models"))
 }
@@ -726,4 +763,47 @@ fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_data_dir()
         .map_err(|error| format!("failed to resolve app data directory: {error}"))
+}
+
+fn sync_directory_contents(source: &Path, destination: &Path) -> Result<(), String> {
+    for entry in fs::read_dir(source)
+        .map_err(|error| format!("failed to read samples source '{}': {error}", source.display()))?
+    {
+        let entry = entry.map_err(|error| format!("failed to inspect sample entry: {error}"))?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let metadata = entry
+            .metadata()
+            .map_err(|error| format!("failed to inspect sample entry: {error}"))?;
+
+        if metadata.is_dir() {
+            fs::create_dir_all(&destination_path).map_err(|error| {
+                format!(
+                    "failed to create samples subdirectory '{}': {error}",
+                    destination_path.display()
+                )
+            })?;
+            sync_directory_contents(&source_path, &destination_path)?;
+        } else {
+            let should_copy = match fs::metadata(&destination_path) {
+                Ok(destination_metadata) => {
+                    destination_metadata.len() != metadata.len()
+                        || metadata.modified().ok() > destination_metadata.modified().ok()
+                }
+                Err(_) => true,
+            };
+
+            if should_copy {
+                fs::copy(&source_path, &destination_path).map_err(|error| {
+                    format!(
+                        "failed to copy sample '{}' to '{}': {error}",
+                        source_path.display(),
+                        destination_path.display()
+                    )
+                })?;
+            }
+        }
+    }
+
+    Ok(())
 }

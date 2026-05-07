@@ -10,6 +10,15 @@ type ThemeMode = "auto" | "light" | "dark";
 type LibraryView = "library" | "favorites" | "people" | "duplicates" | "recents" | "imports";
 type ThumbnailLayoutMode = "dynamic" | "square" | "full";
 
+interface SampleManifestEntry {
+  name: string;
+  mediaType?: MediaType;
+}
+
+const WEB_SAMPLES_ROOT_ID = "web-samples";
+const SAMPLE_PHOTO_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp", "gif", "bmp", "avif"]);
+const SAMPLE_VIDEO_EXTENSIONS = new Set(["mp4", "webm", "mov", "m4v"]);
+
 interface LibraryRoot {
   id: string;
   name: string;
@@ -110,6 +119,12 @@ interface PersonGroup {
   confidence: number;
 }
 
+interface MediaContextMenuState {
+  item: MediaItem;
+  x: number;
+  y: number;
+}
+
 @Component({
   selector: "app-root",
   imports: [CommonModule, SettingsComponent],
@@ -117,6 +132,7 @@ interface PersonGroup {
   styleUrl: "./app.component.css",
 })
 export class AppComponent implements OnInit {
+  protected readonly desktopAvailable = this.isDesktopRuntime();
   protected readonly roots = signal<LibraryRoot[]>([]);
   protected readonly overview = signal<LibraryOverview>({ rootCount: 0, photoCount: 0, videoCount: 0, mediaCount: 0 });
   protected readonly selectedRootId = signal<string | null>(null);
@@ -157,6 +173,8 @@ export class AppComponent implements OnInit {
   protected readonly duplicateGroups = signal<DuplicateGroup[]>([]);
   protected readonly duplicateFilterRootId = signal<string | null>(null);
   protected readonly duplicateDeleteSelection = signal<Set<string>>(new Set());
+  protected readonly mediaContextMenu = signal<MediaContextMenuState | null>(null);
+  private webSampleMedia: MediaItem[] = [];
 
   private readonly persistTheme = effect(() => {
     localStorage.setItem("moments.theme", this.themeMode());
@@ -250,12 +268,12 @@ export class AppComponent implements OnInit {
     return selected ? this.detailMediaItems().findIndex((item) => item.id === selected.id) : -1;
   });
   protected readonly effectiveTheme = computed(() => this.themeMode() === "auto" ? (this.prefersDark() ? "dark" : "light") : this.themeMode());
-  protected readonly zoomedImageWidth = computed(() => this.zoom() > 100 ? `${this.zoom()}%` : "100%");
-  protected readonly zoomedImageHeight = computed(() => this.zoom() > 100 ? "auto" : "100%");
-  protected readonly zoomedImageMaxWidth = computed(() => this.zoom() > 100 ? "none" : "100%");
-  protected readonly zoomedImageMaxHeight = computed(() => this.zoom() > 100 ? "none" : "100%");
   protected readonly viewerFrameStyle = computed(() => ({
     transform: `translate3d(${this.panX()}px, ${this.panY()}px, 0) scale(${this.zoom() / 100})`,
+  }));
+  protected readonly selectedImageStyle = computed(() => ({
+    width: "100%",
+    height: "100%",
   }));
   protected readonly totalMedia = computed(() => this.overview().mediaCount.toLocaleString());
   protected readonly isScanningFaces = computed(() => this.currentAnalysisTask() === "faces");
@@ -292,7 +310,11 @@ export class AppComponent implements OnInit {
     mediaQuery.addEventListener("change", (event) => this.prefersDark.set(event.matches));
 
     await this.refreshLibrary();
-    await this.refreshSettings();
+    if (this.desktopAvailable) {
+      await this.refreshSettings();
+    } else {
+      this.settingsMessage.set("Desktop features are unavailable in the browser preview.");
+    }
     const savedRootId = localStorage.getItem("moments.selectedRootId");
     const initialRoot = this.roots().find((root) => root.id === savedRootId) ?? this.roots()[0] ?? null;
     if (initialRoot) {
@@ -304,6 +326,7 @@ export class AppComponent implements OnInit {
   @HostListener("document:click")
   protected handleDocumentClick(): void {
     this.openRootMenuId.set(null);
+    this.mediaContextMenu.set(null);
   }
 
   @HostListener("document:keydown", ["$event"])
@@ -339,10 +362,19 @@ export class AppComponent implements OnInit {
     if (event.key === "0") {
       event.preventDefault();
       this.resetZoom();
+      return;
+    }
+
+    if (event.key === "Escape") {
+      this.mediaContextMenu.set(null);
     }
   }
 
   protected async addFolder(): Promise<void> {
+    if (!this.requireDesktopFeature("Adding folders")) {
+      return;
+    }
+
     this.isAddingFolder.set(true);
     this.errorMessage.set(null);
 
@@ -375,6 +407,10 @@ export class AppComponent implements OnInit {
   }
 
   protected showView(view: LibraryView): void {
+    if (view === "duplicates" && !this.requireDesktopFeature("Duplicate management")) {
+      return;
+    }
+
     this.activeView.set(view);
     this.isDetailOpen.set(false);
     this.isSettingsOpen.set(false);
@@ -385,6 +421,12 @@ export class AppComponent implements OnInit {
   }
 
   protected async refreshSettings(): Promise<void> {
+    if (!this.desktopAvailable) {
+      this.aiModels.set([]);
+      this.databaseStats.set(null);
+      return;
+    }
+
     try {
       const [models, databaseStats] = await Promise.all([
         invoke<AiModelInfo[]>("list_ai_models"),
@@ -448,6 +490,10 @@ export class AppComponent implements OnInit {
   }
 
   protected async scanRoot(root: LibraryRoot): Promise<void> {
+    if (!this.requireDesktopFeature("Scanning folders")) {
+      return;
+    }
+
     this.errorMessage.set(null);
     this.selectedRootId.set(root.id);
     this.roots.update((roots) =>
@@ -521,6 +567,10 @@ export class AppComponent implements OnInit {
       return;
     }
 
+    if (!this.requireDesktopFeature("Opening media in the native shell")) {
+      return;
+    }
+
     try {
       await invoke("open_media_path", { mediaId: item.id });
     } catch (error) {
@@ -532,10 +582,15 @@ export class AppComponent implements OnInit {
     this.isDetailOpen.set(false);
     this.zoom.set(100);
     this.resetPan();
+    this.mediaContextMenu.set(null);
   }
 
   protected async toggleFavorite(item: MediaItem | null = this.selectedMedia()): Promise<void> {
     if (!item) {
+      return;
+    }
+
+    if (!this.requireDesktopFeature("Favorites")) {
       return;
     }
 
@@ -558,6 +613,10 @@ export class AppComponent implements OnInit {
       return;
     }
 
+    if (!this.requireDesktopFeature("Tag editing")) {
+      return;
+    }
+
     const metadata = this.selectedMediaMetadata() ?? this.emptyMetadata(item.id);
     await this.saveTags(item.id, [...metadata.tags, tag]);
     this.tagDraft.set("");
@@ -570,12 +629,20 @@ export class AppComponent implements OnInit {
       return;
     }
 
+    if (!this.requireDesktopFeature("Tag editing")) {
+      return;
+    }
+
     await this.saveTags(item.id, metadata.tags.filter((candidate) => candidate !== tag));
   }
 
   protected async analyzeFaces(): Promise<void> {
     const item = this.selectedMedia();
     if (!item || item.mediaType !== "photo") {
+      return;
+    }
+
+    if (!this.requireDesktopFeature("Face analysis")) {
       return;
     }
 
@@ -591,6 +658,10 @@ export class AppComponent implements OnInit {
   }
 
   protected async renameFace(face: FaceCandidate, event: Event): Promise<void> {
+    if (!this.requireDesktopFeature("Face naming")) {
+      return;
+    }
+
     const input = event.target instanceof HTMLInputElement ? event.target.value : "";
     try {
       const updated = await invoke<FaceCandidate>("set_face_name", { faceId: face.id, name: input });
@@ -712,6 +783,33 @@ export class AppComponent implements OnInit {
     this.thumbnailLayoutMode.set(mode);
   }
 
+  protected openMediaContextMenu(item: MediaItem, event: MouseEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    this.mediaContextMenu.set({ item, x: event.clientX, y: event.clientY });
+  }
+
+  protected keepMediaContextMenuOpen(event: Event): void {
+    event.stopPropagation();
+  }
+
+  protected async openInFileExplorer(item: MediaItem | null = this.mediaContextMenu()?.item ?? this.selectedMedia()): Promise<void> {
+    if (!item) {
+      return;
+    }
+
+    if (!this.requireDesktopFeature("Opening media in File Explorer")) {
+      return;
+    }
+
+    try {
+      await invoke("show_media_in_explorer", { mediaId: item.id });
+      this.mediaContextMenu.set(null);
+    } catch (error) {
+      this.errorMessage.set(this.describeError(error));
+    }
+  }
+
   protected toggleChrome(): void {
     const shouldShow = !(this.sidebarVisible() || this.inspectorVisible());
     this.sidebarVisible.set(shouldShow);
@@ -727,7 +825,7 @@ export class AppComponent implements OnInit {
   }
 
   protected mediaUrl(item: MediaItem): string {
-    return convertFileSrc(item.path);
+    return this.desktopAvailable && !this.isBrowserAssetPath(item.path) ? convertFileSrc(item.path) : item.path;
   }
 
   protected carouselItemId(item: MediaItem): string {
@@ -795,6 +893,9 @@ export class AppComponent implements OnInit {
 
   protected async removeRoot(root: LibraryRoot, event: Event): Promise<void> {
     event.stopPropagation();
+    if (!this.requireDesktopFeature("Removing folders")) {
+      return;
+    }
     if (!window.confirm(`Remove ${root.name} from Moments?`)) {
       return;
     }
@@ -822,6 +923,9 @@ export class AppComponent implements OnInit {
 
   protected async renameRootFiles(root: LibraryRoot, event: Event): Promise<void> {
     event.stopPropagation();
+    if (!this.requireDesktopFeature("Renaming files")) {
+      return;
+    }
     if (!window.confirm(`Rename media in ${root.name} to date-based filenames?`)) {
       return;
     }
@@ -853,6 +957,10 @@ export class AppComponent implements OnInit {
   }
 
   protected async deleteSelectedDuplicates(): Promise<void> {
+    if (!this.requireDesktopFeature("Deleting duplicates")) {
+      return;
+    }
+
     const mediaIds = [...this.duplicateDeleteSelection()];
     if (mediaIds.length === 0) {
       return;
@@ -879,6 +987,34 @@ export class AppComponent implements OnInit {
   }
 
   private async refreshLibrary(): Promise<void> {
+    if (!this.desktopAvailable) {
+      this.webSampleMedia = await this.loadWebSamples();
+      const photoCount = this.webSampleMedia.filter((item) => item.mediaType === "photo").length;
+      const videoCount = this.webSampleMedia.filter((item) => item.mediaType === "video").length;
+      const roots = this.webSampleMedia.length > 0
+        ? [{
+            id: WEB_SAMPLES_ROOT_ID,
+            name: "Samples",
+            path: "/samples",
+            status: "ready" as const,
+            photoCount,
+            videoCount,
+            mediaCount: this.webSampleMedia.length,
+          }]
+        : [];
+      this.roots.set(roots);
+      this.overview.set({
+        rootCount: roots.length,
+        photoCount,
+        videoCount,
+        mediaCount: this.webSampleMedia.length,
+      });
+      if (this.selectedRootId() && !roots.some((root) => root.id === this.selectedRootId())) {
+        this.selectedRootId.set(roots[0]?.id ?? null);
+      }
+      return;
+    }
+
     const [roots, overview] = await Promise.all([
       invoke<LibraryRoot[]>("list_library_roots"),
       invoke<LibraryOverview>("library_overview"),
@@ -894,6 +1030,15 @@ export class AppComponent implements OnInit {
   private async loadMedia(rootId: string): Promise<void> {
     this.isLoadingMedia.set(true);
     try {
+      if (!this.desktopAvailable) {
+        const media = rootId === WEB_SAMPLES_ROOT_ID ? this.webSampleMedia : [];
+        this.mediaItems.set(media);
+        this.metadataById.set({});
+        this.selectedMediaId.set(media.find((item) => item.id === this.selectedMediaId())?.id ?? media[0]?.id ?? null);
+        this.queueCarouselSync();
+        return;
+      }
+
       const media = await invoke<MediaItem[]>("get_library_media", { rootId, offset: 0, limit: 500 });
       this.mediaItems.set(media);
       await this.loadMetadata(media.map((item) => item.id));
@@ -926,6 +1071,11 @@ export class AppComponent implements OnInit {
   }
 
   private async loadMetadata(mediaIds: string[]): Promise<void> {
+    if (!this.desktopAvailable) {
+      this.metadataById.set({});
+      return;
+    }
+
     if (mediaIds.length === 0) {
       this.metadataById.set({});
       return;
@@ -945,6 +1095,10 @@ export class AppComponent implements OnInit {
   }
 
   private async runFolderAnalysis(command: "analyze_root_faces" | "classify_root_images"): Promise<void> {
+    if (!this.requireDesktopFeature("Folder analysis")) {
+      return;
+    }
+
     const root = this.selectedRoot();
     if (!root) {
       return;
@@ -1004,6 +1158,12 @@ export class AppComponent implements OnInit {
   }
 
   private async loadDuplicateGroups(rootId?: string): Promise<void> {
+    if (!this.desktopAvailable) {
+      this.duplicateGroups.set([]);
+      this.duplicateDeleteSelection.set(new Set());
+      return;
+    }
+
     const groups = await invoke<DuplicateGroup[]>("list_duplicate_groups", { rootId });
     this.duplicateGroups.set(groups);
     this.duplicateDeleteSelection.update((selection) => {
@@ -1036,5 +1196,57 @@ export class AppComponent implements OnInit {
 
   private isTextInput(target: EventTarget | null): boolean {
     return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
+  }
+
+  private async loadWebSamples(): Promise<MediaItem[]> {
+    try {
+      const response = await fetch("/samples/manifest.json", { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error(`failed to load samples manifest (${response.status})`);
+      }
+
+      const manifest = await response.json() as SampleManifestEntry[];
+      return manifest
+        .reduce<MediaItem[]>((items, entry) => {
+          const extension = entry.name.split(".").pop()?.toLowerCase() ?? "";
+          const mediaType = entry.mediaType
+            ?? (SAMPLE_VIDEO_EXTENSIONS.has(extension) ? "video" : "photo");
+          if (!SAMPLE_PHOTO_EXTENSIONS.has(extension) && !SAMPLE_VIDEO_EXTENSIONS.has(extension)) {
+            return items;
+          }
+
+          items.push({
+            id: `web-sample-${entry.name}`,
+            rootId: WEB_SAMPLES_ROOT_ID,
+            name: entry.name,
+            path: `/samples/${encodeURIComponent(entry.name)}`,
+            mediaType,
+            contentHash: null,
+          });
+
+          return items;
+        }, [])
+        .sort((first, second) => first.name.localeCompare(second.name));
+    } catch (error) {
+      this.errorMessage.set(this.describeError(error));
+      return [];
+    }
+  }
+
+  private isDesktopRuntime(): boolean {
+    return typeof window !== "undefined" && typeof (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ !== "undefined";
+  }
+
+  private requireDesktopFeature(feature: string): boolean {
+    if (this.desktopAvailable) {
+      return true;
+    }
+
+    this.errorMessage.set(`${feature} is only available in the desktop app.`);
+    return false;
+  }
+
+  private isBrowserAssetPath(path: string): boolean {
+    return path.startsWith("/") || path.startsWith("http://") || path.startsWith("https://");
   }
 }
