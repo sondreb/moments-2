@@ -7,7 +7,8 @@ import { AiModelInfo, DatabaseStats, SettingsComponent } from "./settings.compon
 type LibraryRootStatus = "ready" | "scanning" | "error";
 type MediaType = "photo" | "video";
 type ThemeMode = "auto" | "light" | "dark";
-type LibraryView = "library" | "favorites" | "people" | "recents" | "imports";
+type LibraryView = "library" | "favorites" | "people" | "duplicates" | "recents" | "imports";
+type ThumbnailLayoutMode = "dynamic" | "square" | "full";
 
 interface LibraryRoot {
   id: string;
@@ -33,6 +34,7 @@ interface MediaItem {
   name: string;
   path: string;
   mediaType: MediaType;
+  contentHash: string | null;
 }
 
 interface MediaMetadata {
@@ -76,6 +78,23 @@ interface LibraryOverview {
   photoCount: number;
   videoCount: number;
   mediaCount: number;
+}
+
+interface FolderOperationResult {
+  rootId: string;
+  affectedMedia: number;
+  message: string;
+}
+
+interface MediaDeleteResult {
+  deletedMedia: number;
+  failedPaths: string[];
+  message: string;
+}
+
+interface DuplicateGroup {
+  hash: string;
+  items: MediaItem[];
 }
 
 interface PersonResult {
@@ -127,14 +146,35 @@ export class AppComponent implements OnInit {
   protected readonly panX = signal(0);
   protected readonly panY = signal(0);
   protected readonly isPanning = signal(false);
+  protected readonly thumbnailSize = signal(136);
+  protected readonly thumbnailLayoutMode = signal<ThumbnailLayoutMode>("dynamic");
   protected readonly themeMode = signal<ThemeMode>("auto");
   protected readonly prefersDark = signal(false);
   protected readonly lastScan = signal<ScanStats | null>(null);
   protected readonly errorMessage = signal<string | null>(null);
   protected readonly portraitMediaIds = signal<Set<string>>(new Set());
+  protected readonly openRootMenuId = signal<string | null>(null);
+  protected readonly duplicateGroups = signal<DuplicateGroup[]>([]);
+  protected readonly duplicateFilterRootId = signal<string | null>(null);
+  protected readonly duplicateDeleteSelection = signal<Set<string>>(new Set());
 
   private readonly persistTheme = effect(() => {
     localStorage.setItem("moments.theme", this.themeMode());
+  });
+
+  private readonly persistSelectedRoot = effect(() => {
+    const selectedRootId = this.selectedRootId();
+    if (selectedRootId) {
+      localStorage.setItem("moments.selectedRootId", selectedRootId);
+    }
+  });
+
+  private readonly persistThumbnailSize = effect(() => {
+    localStorage.setItem("moments.thumbnailSize", String(this.thumbnailSize()));
+  });
+
+  private readonly persistThumbnailLayoutMode = effect(() => {
+    localStorage.setItem("moments.thumbnailLayoutMode", this.thumbnailLayoutMode());
   });
 
   protected readonly selectedRoot = computed(() => {
@@ -150,6 +190,7 @@ export class AppComponent implements OnInit {
   protected readonly selectedRootVideoCount = computed(() => this.selectedRoot()?.videoCount ?? 0);
   protected readonly selectedRootMediaCount = computed(() => this.selectedRoot()?.mediaCount ?? 0);
   protected readonly selectedMedia = computed(() => this.mediaItems().find((item) => item.id === this.selectedMediaId()) ?? this.mediaItems()[0] ?? null);
+  protected readonly detailMediaItems = computed(() => this.activeView() === "favorites" ? this.visibleMediaItems() : this.mediaItems());
   protected readonly selectedMediaMetadata = computed(() => {
     const item = this.selectedMedia();
     return item ? this.metadataById()[item.id] ?? this.emptyMetadata(item.id) : null;
@@ -188,6 +229,8 @@ export class AppComponent implements OnInit {
   });
   protected readonly activeViewTitle = computed(() => {
     switch (this.activeView()) {
+      case "duplicates":
+        return this.duplicateFilterRootId() ? `Duplicates in ${this.rootName(this.duplicateFilterRootId())}` : "Duplicates";
       case "favorites":
         return "Favorites";
       case "people":
@@ -204,7 +247,7 @@ export class AppComponent implements OnInit {
   protected readonly selectedMediaPath = computed(() => this.selectedMedia()?.path ?? "");
   protected readonly selectedMediaIndex = computed(() => {
     const selected = this.selectedMedia();
-    return selected ? this.mediaItems().findIndex((item) => item.id === selected.id) : -1;
+    return selected ? this.detailMediaItems().findIndex((item) => item.id === selected.id) : -1;
   });
   protected readonly effectiveTheme = computed(() => this.themeMode() === "auto" ? (this.prefersDark() ? "dark" : "light") : this.themeMode());
   protected readonly zoomedImageWidth = computed(() => this.zoom() > 100 ? `${this.zoom()}%` : "100%");
@@ -212,17 +255,36 @@ export class AppComponent implements OnInit {
   protected readonly zoomedImageMaxWidth = computed(() => this.zoom() > 100 ? "none" : "100%");
   protected readonly zoomedImageMaxHeight = computed(() => this.zoom() > 100 ? "none" : "100%");
   protected readonly viewerFrameStyle = computed(() => ({
-    transform: `translate3d(${this.panX()}px, ${this.panY()}px, 0)`,
+    transform: `translate3d(${this.panX()}px, ${this.panY()}px, 0) scale(${this.zoom() / 100})`,
   }));
   protected readonly totalMedia = computed(() => this.overview().mediaCount.toLocaleString());
   protected readonly isScanningFaces = computed(() => this.currentAnalysisTask() === "faces");
   protected readonly isScanningFeatures = computed(() => this.currentAnalysisTask() === "features");
+  protected readonly duplicateGroupCount = computed(() => this.duplicateGroups().length);
+  protected readonly thumbnailLayoutLabel = computed(() => {
+    switch (this.thumbnailLayoutMode()) {
+      case "square":
+        return "Squares";
+      case "full":
+        return "Full";
+      default:
+        return "Dynamic";
+    }
+  });
   private panStart: { pointerId: number; x: number; y: number; panX: number; panY: number } | null = null;
 
   async ngOnInit(): Promise<void> {
     const savedTheme = localStorage.getItem("moments.theme");
     if (savedTheme === "auto" || savedTheme === "light" || savedTheme === "dark") {
       this.themeMode.set(savedTheme);
+    }
+    const savedThumbnailSize = Number(localStorage.getItem("moments.thumbnailSize"));
+    if (Number.isFinite(savedThumbnailSize) && savedThumbnailSize >= 32 && savedThumbnailSize <= 512) {
+      this.thumbnailSize.set(savedThumbnailSize);
+    }
+    const savedThumbnailLayoutMode = localStorage.getItem("moments.thumbnailLayoutMode");
+    if (savedThumbnailLayoutMode === "dynamic" || savedThumbnailLayoutMode === "square" || savedThumbnailLayoutMode === "full") {
+      this.thumbnailLayoutMode.set(savedThumbnailLayoutMode);
     }
 
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
@@ -231,6 +293,17 @@ export class AppComponent implements OnInit {
 
     await this.refreshLibrary();
     await this.refreshSettings();
+    const savedRootId = localStorage.getItem("moments.selectedRootId");
+    const initialRoot = this.roots().find((root) => root.id === savedRootId) ?? this.roots()[0] ?? null;
+    if (initialRoot) {
+      this.selectedRootId.set(initialRoot.id);
+      await this.loadMedia(initialRoot.id);
+    }
+  }
+
+  @HostListener("document:click")
+  protected handleDocumentClick(): void {
+    this.openRootMenuId.set(null);
   }
 
   @HostListener("document:keydown", ["$event"])
@@ -305,6 +378,10 @@ export class AppComponent implements OnInit {
     this.activeView.set(view);
     this.isDetailOpen.set(false);
     this.isSettingsOpen.set(false);
+    if (view === "duplicates") {
+      this.duplicateFilterRootId.set(null);
+      void this.loadDuplicateGroups();
+    }
   }
 
   protected async refreshSettings(): Promise<void> {
@@ -384,6 +461,9 @@ export class AppComponent implements OnInit {
       this.lastScan.set(stats);
       await this.refreshLibrary();
       await this.loadMedia(root.id);
+      if (this.activeView() === "duplicates") {
+        await this.loadDuplicateGroups();
+      }
     } catch (error) {
       this.errorMessage.set(this.describeError(error));
       await this.refreshLibrary();
@@ -395,7 +475,27 @@ export class AppComponent implements OnInit {
     this.selectedMediaId.set(null);
     this.isDetailOpen.set(false);
     this.activeView.set("library");
+    this.openRootMenuId.set(null);
     await this.loadMedia(root.id);
+  }
+
+  protected async openDuplicateItem(item: MediaItem): Promise<void> {
+    const root = this.roots().find((candidate) => candidate.id === item.rootId);
+    if (!root) {
+      return;
+    }
+
+    if (this.selectedRootId() !== root.id) {
+      this.selectedRootId.set(root.id);
+      await this.loadMedia(root.id);
+    }
+
+    this.selectedMediaId.set(item.id);
+    this.isDetailOpen.set(true);
+    this.isSettingsOpen.set(false);
+    this.zoom.set(100);
+    this.resetPan();
+    this.queueCarouselSync();
   }
 
   protected selectPerson(person: PersonResult): void {
@@ -413,6 +513,7 @@ export class AppComponent implements OnInit {
     this.zoom.set(100);
     this.resetPan();
     this.tagDraft.set("");
+    this.queueCarouselSync();
   }
 
   protected async openNative(item: MediaItem | null = this.selectedMedia()): Promise<void> {
@@ -514,14 +615,14 @@ export class AppComponent implements OnInit {
   protected previousMedia(): void {
     const index = this.selectedMediaIndex();
     if (index > 0) {
-      this.selectMedia(this.mediaItems()[index - 1]);
+      this.selectMedia(this.detailMediaItems()[index - 1]);
       this.isDetailOpen.set(true);
     }
   }
 
   protected nextMedia(): void {
     const index = this.selectedMediaIndex();
-    const next = this.mediaItems()[index + 1];
+    const next = this.detailMediaItems()[index + 1];
     if (next) {
       this.selectMedia(next);
       this.isDetailOpen.set(true);
@@ -600,6 +701,17 @@ export class AppComponent implements OnInit {
     this.themeMode.set(mode);
   }
 
+  protected setThumbnailSize(value: string): void {
+    const next = Number(value);
+    if (Number.isFinite(next)) {
+      this.thumbnailSize.set(Math.min(512, Math.max(32, next)));
+    }
+  }
+
+  protected setThumbnailLayoutMode(mode: ThumbnailLayoutMode): void {
+    this.thumbnailLayoutMode.set(mode);
+  }
+
   protected toggleChrome(): void {
     const shouldShow = !(this.sidebarVisible() || this.inspectorVisible());
     this.sidebarVisible.set(shouldShow);
@@ -616,6 +728,14 @@ export class AppComponent implements OnInit {
 
   protected mediaUrl(item: MediaItem): string {
     return convertFileSrc(item.path);
+  }
+
+  protected carouselItemId(item: MediaItem): string {
+    return `carousel-item-${item.id}`;
+  }
+
+  protected rootName(rootId: string | null): string {
+    return this.roots().find((root) => root.id === rootId)?.name ?? "folder";
   }
 
   protected faceBoxStyle(face: FaceCandidate): Record<string, string> {
@@ -648,6 +768,116 @@ export class AppComponent implements OnInit {
     return this.portraitMediaIds().has(item.id);
   }
 
+  protected isDuplicateSelected(mediaId: string): boolean {
+    return this.duplicateDeleteSelection().has(mediaId);
+  }
+
+  protected toggleDuplicateSelection(mediaId: string, checked: boolean): void {
+    this.duplicateDeleteSelection.update((selection) => {
+      const next = new Set(selection);
+      if (checked) {
+        next.add(mediaId);
+      } else {
+        next.delete(mediaId);
+      }
+      return next;
+    });
+  }
+
+  protected toggleRootMenu(rootId: string, event: Event): void {
+    event.stopPropagation();
+    this.openRootMenuId.update((current) => current === rootId ? null : rootId);
+  }
+
+  protected keepRootMenuOpen(event: Event): void {
+    event.stopPropagation();
+  }
+
+  protected async removeRoot(root: LibraryRoot, event: Event): Promise<void> {
+    event.stopPropagation();
+    if (!window.confirm(`Remove ${root.name} from Moments?`)) {
+      return;
+    }
+
+    try {
+      const result = await invoke<FolderOperationResult>("remove_library_root", { rootId: root.id });
+      this.analysisMessage.set(result.message);
+      this.openRootMenuId.set(null);
+      await this.refreshLibrary();
+      if (this.selectedRootId() === root.id) {
+        const nextRoot = this.roots()[0] ?? null;
+        this.selectedRootId.set(nextRoot?.id ?? null);
+        this.mediaItems.set([]);
+        if (nextRoot) {
+          await this.loadMedia(nextRoot.id);
+        }
+      }
+      if (this.activeView() === "duplicates") {
+        await this.loadDuplicateGroups();
+      }
+    } catch (error) {
+      this.errorMessage.set(this.describeError(error));
+    }
+  }
+
+  protected async renameRootFiles(root: LibraryRoot, event: Event): Promise<void> {
+    event.stopPropagation();
+    if (!window.confirm(`Rename media in ${root.name} to date-based filenames?`)) {
+      return;
+    }
+
+    try {
+      const result = await invoke<FolderOperationResult>("rename_root_media_by_date", { rootId: root.id });
+      this.analysisMessage.set(result.message);
+      this.openRootMenuId.set(null);
+      await this.refreshLibrary();
+      if (this.selectedRootId() === root.id) {
+        await this.loadMedia(root.id);
+      }
+      if (this.activeView() === "duplicates") {
+        await this.loadDuplicateGroups();
+      }
+    } catch (error) {
+      this.errorMessage.set(this.describeError(error));
+    }
+  }
+
+  protected async showRootDuplicates(root: LibraryRoot, event: Event): Promise<void> {
+    event.stopPropagation();
+    this.openRootMenuId.set(null);
+    this.activeView.set("duplicates");
+    this.isDetailOpen.set(false);
+    this.isSettingsOpen.set(false);
+    this.duplicateFilterRootId.set(root.id);
+    await this.loadDuplicateGroups(root.id);
+  }
+
+  protected async deleteSelectedDuplicates(): Promise<void> {
+    const mediaIds = [...this.duplicateDeleteSelection()];
+    if (mediaIds.length === 0) {
+      return;
+    }
+    if (!window.confirm(`Delete ${mediaIds.length} selected duplicate files from disk?`)) {
+      return;
+    }
+
+    try {
+      const result = await invoke<MediaDeleteResult>("delete_media_items", { mediaIds });
+      this.analysisMessage.set(result.message);
+      if (result.failedPaths.length > 0) {
+        this.errorMessage.set(`Failed to delete ${result.failedPaths.length} files.`);
+      }
+      this.duplicateDeleteSelection.set(new Set());
+      await this.refreshLibrary();
+      if (this.selectedRootId()) {
+        await this.loadMedia(this.selectedRootId()!);
+      }
+      await this.loadDuplicateGroups(this.duplicateFilterRootId() ?? undefined);
+    } catch (error) {
+      this.errorMessage.set(this.describeError(error));
+    }
+  }
+
   private async refreshLibrary(): Promise<void> {
     const [roots, overview] = await Promise.all([
       invoke<LibraryRoot[]>("list_library_roots"),
@@ -656,6 +886,9 @@ export class AppComponent implements OnInit {
 
     this.roots.set(roots);
     this.overview.set(overview);
+    if (this.selectedRootId() && !roots.some((root) => root.id === this.selectedRootId())) {
+      this.selectedRootId.set(roots[0]?.id ?? null);
+    }
   }
 
   private async loadMedia(rootId: string): Promise<void> {
@@ -667,6 +900,7 @@ export class AppComponent implements OnInit {
       if (!media.some((item) => item.id === this.selectedMediaId())) {
         this.selectedMediaId.set(media[0]?.id ?? null);
       }
+      this.queueCarouselSync();
     } catch (error) {
       this.errorMessage.set(this.describeError(error));
     } finally {
@@ -748,6 +982,9 @@ export class AppComponent implements OnInit {
       }
       this.settingsMessage.set("");
       this.analysisMessage.set("");
+      if (this.activeView() === "duplicates") {
+        await this.loadDuplicateGroups(this.duplicateFilterRootId() ?? undefined);
+      }
     } catch (error) {
       this.settingsMessage.set(this.describeError(error));
       this.analysisMessage.set(this.describeError(error));
@@ -766,11 +1003,35 @@ export class AppComponent implements OnInit {
     return { mediaId, favorite: false, tags: [], faceIds: [] };
   }
 
+  private async loadDuplicateGroups(rootId?: string): Promise<void> {
+    const groups = await invoke<DuplicateGroup[]>("list_duplicate_groups", { rootId });
+    this.duplicateGroups.set(groups);
+    this.duplicateDeleteSelection.update((selection) => {
+      const validIds = new Set(groups.flatMap((group) => group.items.map((item) => item.id)));
+      return new Set([...selection].filter((mediaId) => validIds.has(mediaId)));
+    });
+  }
+
   private resetPan(): void {
     this.panX.set(0);
     this.panY.set(0);
     this.isPanning.set(false);
     this.panStart = null;
+  }
+
+  private queueCarouselSync(): void {
+    requestAnimationFrame(() => {
+      const selected = this.selectedMedia();
+      if (!selected || !this.isDetailOpen()) {
+        return;
+      }
+
+      document.getElementById(this.carouselItemId(selected))?.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+        inline: "center",
+      });
+    });
   }
 
   private isTextInput(target: EventTarget | null): boolean {

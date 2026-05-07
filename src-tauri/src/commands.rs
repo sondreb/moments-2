@@ -1,14 +1,24 @@
-use std::{path::PathBuf, process::Command};
+use std::{
+    collections::HashSet,
+    ffi::c_void,
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
+
+use exif::{In, Reader as ExifReader, Tag};
+use time::OffsetDateTime;
 
 use tauri::{AppHandle, State};
 
 use crate::{
     inference,
-    library::{scan_root, LibraryState},
+    library::{scan_root, LibraryState, ScanResult},
     models::{
-        AiModelInfo, CacheClearResult, DatabaseStats, FaceAnalysisResult, FaceAnalysisStatus,
-        FaceCandidate, FolderAnalysisResult, LibraryOverview, LibraryRoot, MediaItem,
-        MediaMetadata, ModelDeleteResult, ModelInstallResult, ScanStats,
+        AiModelInfo, CacheClearResult, DatabaseStats, DuplicateGroup, FaceAnalysisResult,
+        FaceAnalysisStatus, FaceCandidate, FolderAnalysisResult, FolderOperationResult,
+        LibraryOverview, LibraryRoot, MediaDeleteResult, MediaItem, MediaMetadata,
+        ModelDeleteResult, ModelInstallResult, ScanStats,
     },
     services,
 };
@@ -27,6 +37,58 @@ pub fn add_library_root(
 #[tauri::command]
 pub fn list_library_roots(state: State<'_, LibraryState>) -> Result<Vec<LibraryRoot>, String> {
     state.roots()
+}
+
+#[tauri::command]
+pub fn remove_library_root(
+    root_id: String,
+    state: State<'_, LibraryState>,
+    app: AppHandle,
+) -> Result<FolderOperationResult, String> {
+    let removed_media = state.remove_root(&root_id)?;
+    services::remove_root(&app, &root_id)?;
+    let _ = services::clear_cache(&app);
+    Ok(FolderOperationResult {
+        root_id,
+        affected_media: removed_media.len() as u64,
+        message: format!(
+            "Removed folder from Moments and cleared cached media for {} items.",
+            removed_media.len()
+        ),
+    })
+}
+
+#[tauri::command]
+pub fn list_duplicate_groups(
+    root_id: Option<String>,
+    state: State<'_, LibraryState>,
+) -> Result<Vec<DuplicateGroup>, String> {
+    state.duplicate_groups(root_id.as_deref())
+}
+
+#[tauri::command]
+pub async fn delete_media_items(
+    media_ids: Vec<String>,
+    state: State<'_, LibraryState>,
+    app: AppHandle,
+) -> Result<MediaDeleteResult, String> {
+    let candidates = state.media_by_ids(&media_ids)?;
+    let (deleted_ids, failed_paths) =
+        tauri::async_runtime::spawn_blocking(move || delete_media_files(candidates))
+            .await
+            .map_err(|error| format!("media deletion task failed: {error}"))??;
+
+    if !deleted_ids.is_empty() {
+        state.delete_media_items(&deleted_ids)?;
+        services::delete_media_items(&app, &deleted_ids)?;
+        let _ = services::clear_cache(&app);
+    }
+
+    Ok(MediaDeleteResult {
+        deleted_media: deleted_ids.len() as u64,
+        message: format!("Deleted {} duplicate files.", deleted_ids.len()),
+        failed_paths,
+    })
 }
 
 #[tauri::command]
@@ -184,30 +246,34 @@ pub async fn scan_library_root(
         .await
         .map_err(|error| format!("scan task failed: {error}"))?;
 
-    match stats {
-        Ok(stats) => {
-            let stats = state.finish_scan(stats)?;
-            let media = state
-                .media(&stats.root_id, 0, usize::MAX)?
-                .into_iter()
-                .map(|item| {
-                    (
-                        item.id,
-                        item.name,
-                        item.path,
-                        format!("{:?}", item.media_type).to_ascii_lowercase(),
-                    )
-                })
-                .collect::<Vec<_>>();
-            services::record_media(&app, &stats.root_id, &media)?;
-            Ok(stats)
-        }
-        Err(error) => {
-            state.fail_scan(&root_id)?;
-            state.clear_media(&root_id)?;
-            Err(error)
-        }
-    }
+    commit_scan_result(&root_id, stats, &state, &app)
+}
+
+#[tauri::command]
+pub async fn rename_root_media_by_date(
+    root_id: String,
+    state: State<'_, LibraryState>,
+    app: AppHandle,
+) -> Result<FolderOperationResult, String> {
+    let media = state.media_for_root(&root_id)?;
+    let rename_count =
+        tauri::async_runtime::spawn_blocking(move || rename_media_files_by_date(media))
+            .await
+            .map_err(|error| format!("rename task failed: {error}"))??;
+
+    let root_path = state.root_path(&root_id)?;
+    let scan_root_id = root_id.clone();
+    let stats = tauri::async_runtime::spawn_blocking(move || scan_root(scan_root_id, root_path))
+        .await
+        .map_err(|error| format!("scan task failed: {error}"))?;
+    let _ = commit_scan_result(&root_id, stats, &state, &app)?;
+    let _ = services::clear_cache(&app);
+
+    Ok(FolderOperationResult {
+        root_id,
+        affected_media: rename_count,
+        message: format!("Renamed {} files using date-based filenames.", rename_count),
+    })
 }
 
 fn normalize_for_native_open(path: PathBuf) -> Result<PathBuf, String> {
@@ -328,3 +394,300 @@ fn open_with_default_app(path: &PathBuf) -> Result<(), String> {
             .ok_or_else(|| "native viewer returned an error".to_string())
     }
 }
+
+fn commit_scan_result(
+    root_id: &str,
+    scan_result: Result<ScanResult, String>,
+    state: &State<'_, LibraryState>,
+    app: &AppHandle,
+) -> Result<ScanStats, String> {
+    match scan_result {
+        Ok(stats) => {
+            let stats = state.finish_scan(stats)?;
+            let media = state
+                .media(&stats.root_id, 0, usize::MAX)?
+                .into_iter()
+                .map(|item| {
+                    (
+                        item.id,
+                        item.name,
+                        item.path,
+                        format!("{:?}", item.media_type).to_ascii_lowercase(),
+                        item.content_hash,
+                    )
+                })
+                .collect::<Vec<_>>();
+            services::record_media(app, &stats.root_id, &media)?;
+            Ok(stats)
+        }
+        Err(error) => {
+            state.fail_scan(root_id)?;
+            state.clear_media(root_id)?;
+            Err(error)
+        }
+    }
+}
+
+fn rename_media_files_by_date(media: Vec<MediaItem>) -> Result<u64, String> {
+    let mut renamed = 0;
+    let mut reserved_paths = HashSet::<PathBuf>::new();
+
+    for item in media {
+        let source = PathBuf::from(&item.path);
+        if !source.exists() {
+            continue;
+        }
+
+        let Some(parent) = source.parent() else {
+            continue;
+        };
+        let extension = source
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_ascii_lowercase())
+            .unwrap_or_default();
+        if extension.is_empty() {
+            continue;
+        }
+
+        let Some(timestamp) = media_timestamp(&source)? else {
+            continue;
+        };
+        let mut destination = parent.join(format!("{timestamp}.{extension}"));
+        let mut suffix = 1;
+        while (destination.exists() && destination != source)
+            || reserved_paths.contains(&destination)
+        {
+            destination = parent.join(format!("{timestamp}-{suffix:02}.{extension}"));
+            suffix += 1;
+        }
+        reserved_paths.insert(destination.clone());
+
+        if destination != source {
+            fs::rename(&source, &destination).map_err(|error| {
+                format!(
+                    "failed to rename '{}' to '{}': {error}",
+                    source.display(),
+                    destination.display()
+                )
+            })?;
+            notify_windows_rename(&source, &destination);
+            renamed += 1;
+        }
+    }
+
+    Ok(renamed)
+}
+
+fn delete_media_files(media: Vec<MediaItem>) -> Result<(Vec<String>, Vec<String>), String> {
+    let mut deleted_ids = Vec::new();
+    let mut failed_paths = Vec::new();
+
+    for item in media {
+        let path = PathBuf::from(&item.path);
+        match fs::remove_file(&path) {
+            Ok(()) => deleted_ids.push(item.id),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => deleted_ids.push(item.id),
+            Err(_) => failed_paths.push(item.path),
+        }
+    }
+
+    Ok((deleted_ids, failed_paths))
+}
+
+fn media_timestamp(path: &PathBuf) -> Result<Option<String>, String> {
+    let datetime = if let Some(exif_datetime) = embedded_media_timestamp(path)? {
+        exif_datetime
+    } else if let Some(filename_datetime) = filename_timestamp(path) {
+        filename_datetime
+    } else {
+        return Ok(None);
+    };
+
+    Ok(Some(format!(
+        "{:04}-{:02}-{:02}-{:02}h{:02}m{:02}",
+        datetime.year(),
+        u8::from(datetime.month()),
+        datetime.day(),
+        datetime.hour(),
+        datetime.minute(),
+        datetime.second()
+    )))
+}
+
+fn embedded_media_timestamp(path: &Path) -> Result<Option<OffsetDateTime>, String> {
+    let Some(extension) = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+    else {
+        return Ok(None);
+    };
+
+    let supports_exif = matches!(
+        extension.as_str(),
+        "jpg" | "jpeg" | "tif" | "tiff" | "heic" | "heif"
+    );
+    if !supports_exif {
+        return Ok(None);
+    }
+
+    let file = fs::File::open(path)
+        .map_err(|error| format!("failed to inspect '{}': {error}", path.display()))?;
+    let mut reader = std::io::BufReader::new(file);
+    let exif = match ExifReader::new().read_from_container(&mut reader) {
+        Ok(exif) => exif,
+        Err(_) => return Ok(None),
+    };
+
+    for tag in [Tag::DateTimeOriginal, Tag::DateTimeDigitized, Tag::DateTime] {
+        if let Some(field) = exif.get_field(tag, In::PRIMARY) {
+            let value = field.display_value().with_unit(&exif).to_string();
+            if let Some(datetime) = parse_exif_datetime(&value) {
+                return Ok(Some(datetime));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+fn parse_exif_datetime(value: &str) -> Option<OffsetDateTime> {
+    let normalized = value.trim().split_whitespace().collect::<Vec<_>>();
+    if normalized.len() < 2 {
+        return None;
+    }
+
+    let date_parts = normalized[0].split(':').collect::<Vec<_>>();
+    let time_parts = normalized[1].split(':').collect::<Vec<_>>();
+    if date_parts.len() != 3 || time_parts.len() != 3 {
+        return None;
+    }
+
+    let year = date_parts[0].parse::<i32>().ok()?;
+    let month = date_parts[1].parse::<u8>().ok()?;
+    let day = date_parts[2].parse::<u8>().ok()?;
+    let hour = time_parts[0].parse::<u8>().ok()?;
+    let minute = time_parts[1].parse::<u8>().ok()?;
+    let second = time_parts[2].parse::<u8>().ok()?;
+
+    build_timestamp(year, month, day, hour, minute, second)
+}
+
+fn filename_timestamp(path: &Path) -> Option<OffsetDateTime> {
+    let stem = path.file_stem()?.to_str()?.to_ascii_lowercase();
+    let compact = stem
+        .chars()
+        .map(|character| {
+            if character.is_ascii_digit() {
+                character
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>();
+    let tokens = compact
+        .split_whitespace()
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+
+    for window in tokens.windows(2) {
+        let [date_token, time_token] = window else {
+            continue;
+        };
+        if date_token.len() == 8 && time_token.len() == 6 {
+            if let (Ok(year), Ok(month), Ok(day), Ok(hour), Ok(minute), Ok(second)) = (
+                date_token[0..4].parse::<i32>(),
+                date_token[4..6].parse::<u8>(),
+                date_token[6..8].parse::<u8>(),
+                time_token[0..2].parse::<u8>(),
+                time_token[2..4].parse::<u8>(),
+                time_token[4..6].parse::<u8>(),
+            ) {
+                if let Some(timestamp) = build_timestamp(year, month, day, hour, minute, second) {
+                    return Some(timestamp);
+                }
+            }
+        }
+    }
+
+    if tokens.len() >= 6 {
+        for window in tokens.windows(6) {
+            if let (Ok(year), Ok(month), Ok(day), Ok(hour), Ok(minute), Ok(second)) = (
+                window[0].parse::<i32>(),
+                window[1].parse::<u8>(),
+                window[2].parse::<u8>(),
+                window[3].parse::<u8>(),
+                window[4].parse::<u8>(),
+                window[5].parse::<u8>(),
+            ) {
+                if let Some(timestamp) = build_timestamp(year, month, day, hour, minute, second) {
+                    return Some(timestamp);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn build_timestamp(
+    year: i32,
+    month: u8,
+    day: u8,
+    hour: u8,
+    minute: u8,
+    second: u8,
+) -> Option<OffsetDateTime> {
+    let month = time::Month::try_from(month).ok()?;
+    let date = time::Date::from_calendar_date(year, month, day).ok()?;
+    let time = time::Time::from_hms(hour, minute, second).ok()?;
+    Some(time::PrimitiveDateTime::new(date, time).assume_utc())
+}
+
+#[cfg(windows)]
+fn notify_windows_rename(source: &Path, destination: &Path) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::{
+        SHChangeNotify, SHCNE_RENAMEITEM, SHCNE_UPDATEDIR, SHCNF_PATHW,
+    };
+
+    let source_wide = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<u16>>();
+    let destination_wide = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<u16>>();
+
+    unsafe {
+        SHChangeNotify(
+            SHCNE_RENAMEITEM as i32,
+            SHCNF_PATHW,
+            source_wide.as_ptr() as *const c_void,
+            destination_wide.as_ptr() as *const c_void,
+        );
+    }
+
+    if let Some(parent) = destination.parent() {
+        let parent_wide = parent
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>();
+        unsafe {
+            SHChangeNotify(
+                SHCNE_UPDATEDIR as i32,
+                SHCNF_PATHW,
+                parent_wide.as_ptr() as *const c_void,
+                std::ptr::null(),
+            );
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn notify_windows_rename(_source: &Path, _destination: &Path) {}

@@ -1,13 +1,16 @@
 use std::{
     collections::VecDeque,
     fs,
+    io::Read,
     path::{Path, PathBuf},
     sync::Mutex,
 };
 
+use sha2::{Digest, Sha256};
+
 use crate::models::{
-    FaceAnalysisResult, FaceAnalysisStatus, FaceCandidate, LibraryOverview, LibraryRoot,
-    LibraryRootStatus, MediaItem, MediaMetadata, MediaType, ScanStats,
+    DuplicateGroup, FaceAnalysisResult, FaceAnalysisStatus, FaceCandidate, LibraryOverview,
+    LibraryRoot, LibraryRootStatus, MediaItem, MediaMetadata, MediaType, ScanStats,
 };
 
 #[derive(Default)]
@@ -19,6 +22,33 @@ pub struct LibraryState {
 }
 
 impl LibraryState {
+    pub fn hydrate(
+        &self,
+        mut roots: Vec<LibraryRoot>,
+        media_items: Vec<MediaItem>,
+        metadata: Vec<MediaMetadata>,
+        faces: Vec<FaceCandidate>,
+    ) -> Result<(), String> {
+        recount_root_counts(&mut roots, &media_items);
+        *self
+            .roots
+            .lock()
+            .map_err(|_| "library state is unavailable")? = roots;
+        *self
+            .media_items
+            .lock()
+            .map_err(|_| "library media state is unavailable")? = media_items;
+        *self
+            .metadata
+            .lock()
+            .map_err(|_| "library metadata state is unavailable")? = metadata;
+        *self
+            .faces
+            .lock()
+            .map_err(|_| "face metadata state is unavailable")? = faces;
+        Ok(())
+    }
+
     pub fn add_root(&self, path: String) -> Result<LibraryRoot, String> {
         let normalized_path = normalize_path(&path)?;
         let mut roots = self
@@ -30,7 +60,7 @@ impl LibraryState {
             return Ok(existing.clone());
         }
 
-        let id = format!("root-{}", roots.len() + 1);
+        let id = next_root_id(&roots);
         let root = LibraryRoot {
             id,
             name: display_name(&normalized_path),
@@ -43,6 +73,61 @@ impl LibraryState {
 
         roots.push(root.clone());
         Ok(root)
+    }
+
+    pub fn remove_root(&self, root_id: &str) -> Result<Vec<MediaItem>, String> {
+        let mut roots = self
+            .roots
+            .lock()
+            .map_err(|_| "library state is unavailable")?;
+        let removed_root = roots
+            .iter()
+            .find(|root| root.id == root_id)
+            .cloned()
+            .ok_or_else(|| format!("library root '{root_id}' was not found"))?;
+        roots.retain(|root| root.id != root_id);
+        drop(roots);
+
+        let mut media_items = self
+            .media_items
+            .lock()
+            .map_err(|_| "library media state is unavailable")?;
+        let removed_media = media_items
+            .iter()
+            .filter(|item| item.root_id == root_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        media_items.retain(|item| item.root_id != root_id);
+        let removed_ids = removed_media
+            .iter()
+            .map(|item| item.id.clone())
+            .collect::<Vec<_>>();
+        drop(media_items);
+
+        let mut metadata = self
+            .metadata
+            .lock()
+            .map_err(|_| "library metadata state is unavailable")?;
+        metadata.retain(|entry| {
+            !removed_ids
+                .iter()
+                .any(|media_id| media_id == &entry.media_id)
+        });
+        drop(metadata);
+
+        let mut faces = self
+            .faces
+            .lock()
+            .map_err(|_| "face metadata state is unavailable")?;
+        faces.retain(|face| {
+            !removed_ids
+                .iter()
+                .any(|media_id| media_id == &face.media_id)
+        });
+        drop(faces);
+
+        let _ = removed_root;
+        Ok(removed_media)
     }
 
     pub fn roots(&self) -> Result<Vec<LibraryRoot>, String> {
@@ -148,6 +233,32 @@ impl LibraryState {
         Ok(media_items
             .iter()
             .filter(|item| item.root_id == root_id && matches!(item.media_type, MediaType::Photo))
+            .cloned()
+            .collect())
+    }
+
+    pub fn media_for_root(&self, root_id: &str) -> Result<Vec<MediaItem>, String> {
+        let media_items = self
+            .media_items
+            .lock()
+            .map_err(|_| "library media state is unavailable")?;
+
+        Ok(media_items
+            .iter()
+            .filter(|item| item.root_id == root_id)
+            .cloned()
+            .collect())
+    }
+
+    pub fn media_by_ids(&self, media_ids: &[String]) -> Result<Vec<MediaItem>, String> {
+        let media_items = self
+            .media_items
+            .lock()
+            .map_err(|_| "library media state is unavailable")?;
+
+        Ok(media_items
+            .iter()
+            .filter(|item| media_ids.iter().any(|media_id| media_id == &item.id))
             .cloned()
             .collect())
     }
@@ -294,6 +405,75 @@ impl LibraryState {
         Ok(face.clone())
     }
 
+    pub fn delete_media_items(&self, media_ids: &[String]) -> Result<Vec<MediaItem>, String> {
+        if media_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut media_items = self
+            .media_items
+            .lock()
+            .map_err(|_| "library media state is unavailable")?;
+        let removed_media = media_items
+            .iter()
+            .filter(|item| media_ids.iter().any(|media_id| media_id == &item.id))
+            .cloned()
+            .collect::<Vec<_>>();
+        media_items.retain(|item| !media_ids.iter().any(|media_id| media_id == &item.id));
+
+        let mut roots = self
+            .roots
+            .lock()
+            .map_err(|_| "library state is unavailable")?;
+        recount_root_counts(&mut roots, &media_items);
+        drop(roots);
+        drop(media_items);
+
+        let mut metadata = self
+            .metadata
+            .lock()
+            .map_err(|_| "library metadata state is unavailable")?;
+        metadata.retain(|entry| !media_ids.iter().any(|media_id| media_id == &entry.media_id));
+        drop(metadata);
+
+        let mut faces = self
+            .faces
+            .lock()
+            .map_err(|_| "face metadata state is unavailable")?;
+        faces.retain(|face| !media_ids.iter().any(|media_id| media_id == &face.media_id));
+
+        Ok(removed_media)
+    }
+
+    pub fn duplicate_groups(&self, root_id: Option<&str>) -> Result<Vec<DuplicateGroup>, String> {
+        let media_items = self
+            .media_items
+            .lock()
+            .map_err(|_| "library media state is unavailable")?;
+        let mut grouped = std::collections::BTreeMap::<String, Vec<MediaItem>>::new();
+
+        for item in media_items.iter() {
+            if root_id.is_some_and(|candidate| candidate != item.root_id) {
+                continue;
+            }
+            let Some(content_hash) = item.content_hash.clone() else {
+                continue;
+            };
+            grouped.entry(content_hash).or_default().push(item.clone());
+        }
+
+        Ok(grouped
+            .into_iter()
+            .filter_map(|(hash, mut items)| {
+                if items.len() < 2 {
+                    return None;
+                }
+                items.sort_by(|first, second| first.path.cmp(&second.path));
+                Some(DuplicateGroup { hash, items })
+            })
+            .collect())
+    }
+
     pub fn clear_media(&self, root_id: &str) -> Result<(), String> {
         let mut media_items = self
             .media_items
@@ -363,6 +543,9 @@ pub fn scan_root(root_id: String, root_path: PathBuf) -> Result<ScanResult, Stri
             if path.is_dir() {
                 pending.push_back(path);
             } else if let Some(media_type) = media_type_for_path(&path) {
+                let content_hash = matches!(media_type, MediaType::Photo)
+                    .then(|| compute_file_hash(&path))
+                    .transpose()?;
                 match media_type {
                     MediaType::Photo => photo_count += 1,
                     MediaType::Video => video_count += 1,
@@ -374,6 +557,7 @@ pub fn scan_root(root_id: String, root_path: PathBuf) -> Result<ScanResult, Stri
                     name: display_name(&path.to_string_lossy()),
                     path: path.to_string_lossy().to_string(),
                     media_type,
+                    content_hash,
                 });
             } else {
                 skipped_count += 1;
@@ -420,6 +604,50 @@ fn display_name(path: &str) -> String {
         .filter(|name| !name.is_empty())
         .unwrap_or(path)
         .to_string()
+}
+
+fn next_root_id(roots: &[LibraryRoot]) -> String {
+    let mut index = 1;
+    loop {
+        let candidate = format!("root-{index}");
+        if !roots.iter().any(|root| root.id == candidate) {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
+fn recount_root_counts(roots: &mut [LibraryRoot], media_items: &[MediaItem]) {
+    for root in roots.iter_mut() {
+        root.photo_count = media_items
+            .iter()
+            .filter(|item| item.root_id == root.id && matches!(item.media_type, MediaType::Photo))
+            .count() as u64;
+        root.video_count = media_items
+            .iter()
+            .filter(|item| item.root_id == root.id && matches!(item.media_type, MediaType::Video))
+            .count() as u64;
+        root.media_count = root.photo_count + root.video_count;
+    }
+}
+
+fn compute_file_hash(path: &Path) -> Result<String, String> {
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("failed to open '{}' for hashing: {error}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("failed to hash '{}': {error}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn is_supported_image(path: &Path) -> bool {

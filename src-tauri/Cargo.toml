@@ -28,4 +28,9 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 ureq = { version = "2.12", features = ["tls"] }
 image = { version = "=0.24.9", default-features = false, features = ["jpeg", "png", "webp", "bmp", "gif", "tiff"] }
 ort = "=2.0.0-rc.10"
+sha2 = "0.10"
+kamadak-exif = "0.6"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_UI_Shell"] }
 

@@ -20,6 +20,7 @@ pub struct MediaItem {
     pub name: String,
     pub path: String,
     pub media_type: MediaType,
+    pub content_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -154,4 +155,27 @@ pub struct DatabaseStats {
     pub favorite_count: u64,
     pub tag_count: u64,
     pub face_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderOperationResult {
+    pub root_id: String,
+    pub affected_media: u64,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaDeleteResult {
+    pub deleted_media: u64,
+    pub failed_paths: Vec<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateGroup {
+    pub hash: String,
+    pub items: Vec<MediaItem>,
 }

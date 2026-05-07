@@ -12,6 +12,7 @@
       <button class="nav-row" type="button" [class.active]="activeView() === 'library' && !isSettingsOpen()" (click)="showView('library')"><span aria-hidden="true">▣</span> Library</button>
       <button class="nav-row" type="button" [class.active]="activeView() === 'favorites' && !isSettingsOpen()" (click)="showView('favorites')"><span aria-hidden="true">♥</span> Favorites <small>{{ favoriteCount() }}</small></button>
       <button class="nav-row" type="button" [class.active]="activeView() === 'people' && !isSettingsOpen()" (click)="showView('people')"><span aria-hidden="true">◎</span> People <small>{{ peopleCount() }}</small></button>
+      <button class="nav-row" type="button" [class.active]="activeView() === 'duplicates' && !isSettingsOpen()" (click)="showView('duplicates')"><span aria-hidden="true">⧉</span> Duplicates <small>{{ duplicateGroupCount() }}</small></button>
       <button class="nav-row" type="button" [class.active]="activeView() === 'recents' && !isSettingsOpen()" (click)="showView('recents')"><span aria-hidden="true">◷</span> Recents</button>
       <button class="nav-row" type="button" [class.active]="activeView() === 'imports' && !isSettingsOpen()" (click)="showView('imports')"><span aria-hidden="true">⇪</span> Imports</button>
       <button class="nav-row" type="button" [class.active]="isSettingsOpen()" (click)="openSettings()"><span aria-hidden="true">⚙</span> Settings</button>
@@ -24,10 +25,9 @@
 
     <p class="sidebar-label">Folders</p>
     <nav class="folder-list" aria-label="Folders">
-      <button
+      <div
         *ngFor="let root of roots()"
         class="folder-row"
-        type="button"
         [class.active]="isSelected(root)"
         (click)="selectRoot(root)"
       >
@@ -36,8 +36,14 @@
           <strong>{{ root.name }}</strong>
           <small>{{ root.mediaCount | number }} media</small>
         </span>
+        <button class="folder-menu-button" type="button" title="Folder options" (click)="toggleRootMenu(root.id, $event)">...</button>
         <span class="status-dot" [class.scanning]="root.status === 'scanning'" [class.error]="root.status === 'error'"></span>
-      </button>
+        <div class="folder-menu" *ngIf="openRootMenuId() === root.id" (click)="keepRootMenuOpen($event)">
+          <button type="button" (click)="showRootDuplicates(root, $event)">Show duplicates</button>
+          <button type="button" (click)="renameRootFiles(root, $event)">Rename files by date</button>
+          <button type="button" (click)="removeRoot(root, $event)">Remove folder</button>
+        </div>
+      </div>
     </nav>
   </aside>
 
@@ -59,11 +65,15 @@
           <button class="active" type="button">Days</button>
           <button type="button">All Photos</button>
         </div>
-        <div class="segmented" aria-label="Theme">
-          <button type="button" [class.active]="themeMode() === 'auto'" (click)="setThemeMode('auto')">Auto</button>
-          <button type="button" [class.active]="themeMode() === 'light'" (click)="setThemeMode('light')">Light</button>
-          <button type="button" [class.active]="themeMode() === 'dark'" (click)="setThemeMode('dark')">Dark</button>
+        <div class="segmented thumbnail-layout-toggle" aria-label="Thumbnail layout">
+          <button type="button" [class.active]="thumbnailLayoutMode() === 'square'" (click)="setThumbnailLayoutMode('square')">Squares</button>
+          <button type="button" [class.active]="thumbnailLayoutMode() === 'full'" (click)="setThumbnailLayoutMode('full')">Full</button>
+          <button type="button" [class.active]="thumbnailLayoutMode() === 'dynamic'" (click)="setThumbnailLayoutMode('dynamic')">Dynamic</button>
         </div>
+        <label class="thumbnail-slider" aria-label="Thumbnail size">
+          <span>{{ thumbnailLayoutLabel() }}</span>
+          <input type="range" min="32" max="512" step="8" [value]="thumbnailSize()" (input)="setThumbnailSize($any($event.target).value)" />
+        </label>
         <button class="icon-action" type="button" title="Toggle panels" (click)="toggleChrome()">◫</button>
         <button class="icon-action" type="button" title="Show inspector" (click)="inspectorVisible.set(!inspectorVisible())">ⓘ</button>
         <button class="ghost-action" type="button" [disabled]="!selectedRoot()" (click)="selectedRoot() && scanRoot(selectedRoot()!)">
@@ -122,12 +132,12 @@
         <div class="viewer-toolbar">
           <div class="viewer-title">
             <strong>{{ item.name }}</strong>
-            <span>{{ item.mediaType }} · {{ selectedMediaIndex() + 1 }} / {{ mediaItems().length }}</span>
+            <span>{{ item.mediaType }} · {{ selectedMediaIndex() + 1 }} / {{ detailMediaItems().length }}</span>
           </div>
           <div class="viewer-actions">
             <button class="icon-action favorite-action" type="button" title="Favorite" [class.active]="selectedMediaMetadata()?.favorite" [attr.aria-pressed]="selectedMediaMetadata()?.favorite" (click)="toggleFavorite(item)">♥</button>
             <button class="icon-action" type="button" title="Previous" [disabled]="selectedMediaIndex() <= 0" (click)="previousMedia()">‹</button>
-            <button class="icon-action" type="button" title="Next" [disabled]="selectedMediaIndex() >= mediaItems().length - 1" (click)="nextMedia()">›</button>
+            <button class="icon-action" type="button" title="Next" [disabled]="selectedMediaIndex() >= detailMediaItems().length - 1" (click)="nextMedia()">›</button>
             <button class="icon-action" type="button" title="Zoom out" [disabled]="item.mediaType !== 'photo'" (click)="zoomOut()">−</button>
             <button class="zoom-value" type="button" title="Reset zoom" [disabled]="item.mediaType !== 'photo'" (click)="resetZoom()">{{ zoom() }}%</button>
             <button class="icon-action" type="button" title="Zoom in" [disabled]="item.mediaType !== 'photo'" (click)="zoomIn()">+</button>
@@ -142,15 +152,33 @@
               [src]="mediaUrl(item)"
               [alt]="item.name"
               title="Selected photo"
-              [style.width]="zoomedImageWidth()"
-              [style.height]="zoomedImageHeight()"
-              [style.max-width]="zoomedImageMaxWidth()"
-              [style.max-height]="zoomedImageMaxHeight()"
+              draggable="false"
             />
             <span class="face-box" *ngFor="let face of selectedFaceAnalysis()?.faces" [ngStyle]="faceBoxStyle(face)" [title]="(face.name || 'Face') + ' · ' + (face.confidence | percent)"></span>
           </div>
           <video *ngIf="item.mediaType === 'video'" [src]="mediaUrl(item)" controls autoplay></video>
         </div>
+
+        <nav class="viewer-carousel" aria-label="Other photos" *ngIf="detailMediaItems().length > 1">
+          <button class="carousel-step" type="button" title="Previous photo" [disabled]="selectedMediaIndex() <= 0" (click)="previousMedia()">‹</button>
+          <div class="carousel-track" role="list">
+            <button
+              class="carousel-item"
+              type="button"
+              role="listitem"
+              *ngFor="let carouselItem of detailMediaItems()"
+              [id]="carouselItemId(carouselItem)"
+              [class.active]="isSelectedMedia(carouselItem)"
+              [title]="carouselItem.name"
+              [attr.aria-label]="carouselItem.name"
+              (click)="selectMedia(carouselItem)"
+            >
+              <img *ngIf="carouselItem.mediaType === 'photo'" [src]="mediaUrl(carouselItem)" [alt]="carouselItem.name" title="Carousel photo" loading="lazy" />
+              <video *ngIf="carouselItem.mediaType === 'video'" [src]="mediaUrl(carouselItem)" muted preload="metadata"></video>
+            </button>
+          </div>
+          <button class="carousel-step" type="button" title="Next photo" [disabled]="selectedMediaIndex() >= detailMediaItems().length - 1" (click)="nextMedia()">›</button>
+        </nav>
 
         <aside class="detail-metadata">
           <section>
@@ -202,8 +230,38 @@
           <p>This section is reserved for timeline and import tracking.</p>
         </article>
 
-        <div class="media-grid" *ngIf="!isDetailOpen() && activeView() !== 'people' && activeView() !== 'recents' && activeView() !== 'imports' && visibleMediaItems().length > 0">
-          <figure class="media-tile" *ngFor="let item of visibleMediaItems()" [class.active]="isSelectedMedia(item)" [class.portrait-tile]="isPortraitTile(item)" (click)="selectMedia(item)" (dblclick)="openNative(item)">
+        <section class="duplicates-view" [style.--thumb-size.px]="thumbnailSize()" *ngIf="!isDetailOpen() && activeView() === 'duplicates'">
+          <article class="empty-state compact-empty" *ngIf="duplicateGroups().length === 0">
+            <h3>No duplicates found</h3>
+            <p>Photos with matching hashes will appear here.</p>
+          </article>
+          <div class="duplicates-toolbar" *ngIf="duplicateGroups().length > 0">
+            <p>{{ duplicateGroups().length }} duplicate groups</p>
+            <button class="ghost-action" type="button" [disabled]="duplicateDeleteSelection().size === 0" (click)="deleteSelectedDuplicates()">Delete selected</button>
+          </div>
+          <article class="duplicate-group" *ngFor="let group of duplicateGroups()">
+            <header>
+              <strong>{{ group.items.length }} matches</strong>
+              <small>{{ group.hash.slice(0, 12) }}...</small>
+            </header>
+            <div class="duplicate-items">
+              <label class="duplicate-item" *ngFor="let item of group.items">
+                <input type="checkbox" [checked]="isDuplicateSelected(item.id)" (change)="toggleDuplicateSelection(item.id, $any($event.target).checked)" />
+                <button type="button" (click)="openDuplicateItem(item)">
+                  <img *ngIf="item.mediaType === 'photo'" [src]="mediaUrl(item)" [alt]="item.name" title="Duplicate photo" loading="lazy" />
+                  <video *ngIf="item.mediaType === 'video'" [src]="mediaUrl(item)" muted preload="metadata"></video>
+                  <span>
+                    <strong>{{ item.name }}</strong>
+                    <small>{{ rootName(item.rootId) }}</small>
+                  </span>
+                </button>
+              </label>
+            </div>
+          </article>
+        </section>
+
+        <div class="media-grid" [style.--thumb-size.px]="thumbnailSize()" [class.square-mode]="thumbnailLayoutMode() === 'square'" [class.full-mode]="thumbnailLayoutMode() === 'full'" [class.dynamic-mode]="thumbnailLayoutMode() === 'dynamic'" *ngIf="!isDetailOpen() && activeView() !== 'people' && activeView() !== 'duplicates' && activeView() !== 'recents' && activeView() !== 'imports' && visibleMediaItems().length > 0">
+          <figure class="media-tile" *ngFor="let item of visibleMediaItems()" [class.active]="isSelectedMedia(item)" [class.portrait-tile]="thumbnailLayoutMode() === 'dynamic' && isPortraitTile(item)" (click)="selectMedia(item)" (dblclick)="openNative(item)">
             <img *ngIf="item.mediaType === 'photo'" [src]="mediaUrl(item)" [alt]="item.name" title="Photo thumbnail" loading="lazy" (load)="markTileOrientation(item, $event)" />
             <video *ngIf="item.mediaType === 'video'" [src]="mediaUrl(item)" preload="metadata" muted></video>
             <figcaption>

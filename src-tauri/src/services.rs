@@ -8,8 +8,8 @@ use rusqlite::{params, Connection};
 use tauri::{AppHandle, Manager};
 
 use crate::models::{
-    AiModelInfo, CacheClearResult, DatabaseStats, FaceCandidate, ModelDeleteResult,
-    ModelInstallResult,
+    AiModelInfo, CacheClearResult, DatabaseStats, FaceCandidate, LibraryRoot, LibraryRootStatus,
+    MediaItem, MediaMetadata, MediaType, ModelDeleteResult, ModelInstallResult,
 };
 
 struct ModelDefinition {
@@ -182,6 +182,26 @@ pub fn database_stats(app: &AppHandle) -> Result<DatabaseStats, String> {
     })
 }
 
+pub fn load_library_snapshot(
+    app: &AppHandle,
+) -> Result<
+    (
+        Vec<LibraryRoot>,
+        Vec<MediaItem>,
+        Vec<MediaMetadata>,
+        Vec<FaceCandidate>,
+    ),
+    String,
+> {
+    let connection = open_database(app)?;
+    Ok((
+        load_roots(&connection)?,
+        load_media_items(&connection)?,
+        load_metadata(&connection)?,
+        load_faces(&connection)?,
+    ))
+}
+
 pub fn record_root(app: &AppHandle, id: &str, name: &str, path: &str) -> Result<(), String> {
     let connection = open_database(app)?;
     connection
@@ -197,7 +217,7 @@ pub fn record_root(app: &AppHandle, id: &str, name: &str, path: &str) -> Result<
 pub fn record_media(
     app: &AppHandle,
     root_id: &str,
-    media: &[(String, String, String, String)],
+    media: &[(String, String, String, String, Option<String>)],
 ) -> Result<(), String> {
     let mut connection = open_database(app)?;
     let transaction = connection
@@ -210,11 +230,11 @@ pub fn record_media(
         )
         .map_err(|error| format!("failed to update media database: {error}"))?;
 
-    for (id, name, path, media_type) in media {
+    for (id, name, path, media_type, content_hash) in media {
         transaction
             .execute(
-                "insert into media_items (id, root_id, name, path, media_type) values (?1, ?2, ?3, ?4, ?5)",
-                params![id, root_id, name, path, media_type],
+                "insert into media_items (id, root_id, name, path, media_type, content_hash) values (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![id, root_id, name, path, media_type, content_hash],
             )
             .map_err(|error| format!("failed to record media in database: {error}"))?;
     }
@@ -222,6 +242,59 @@ pub fn record_media(
     transaction
         .commit()
         .map_err(|error| format!("failed to commit media database transaction: {error}"))?;
+    Ok(())
+}
+
+pub fn remove_root(app: &AppHandle, root_id: &str) -> Result<(), String> {
+    let mut connection = open_database(app)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| format!("failed to start root removal transaction: {error}"))?;
+    delete_media_rows(&transaction, root_id, None)?;
+    transaction
+        .execute("delete from library_roots where id = ?1", params![root_id])
+        .map_err(|error| format!("failed to delete root from database: {error}"))?;
+    transaction
+        .commit()
+        .map_err(|error| format!("failed to commit root removal transaction: {error}"))?;
+    Ok(())
+}
+
+pub fn delete_media_items(app: &AppHandle, media_ids: &[String]) -> Result<(), String> {
+    if media_ids.is_empty() {
+        return Ok(());
+    }
+
+    let mut connection = open_database(app)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| format!("failed to start media deletion transaction: {error}"))?;
+    for media_id in media_ids {
+        transaction
+            .execute(
+                "delete from face_candidates where media_id = ?1",
+                params![media_id],
+            )
+            .map_err(|error| format!("failed to delete face candidates: {error}"))?;
+        transaction
+            .execute(
+                "delete from media_tags where media_id = ?1",
+                params![media_id],
+            )
+            .map_err(|error| format!("failed to delete media tags: {error}"))?;
+        transaction
+            .execute(
+                "delete from media_metadata where media_id = ?1",
+                params![media_id],
+            )
+            .map_err(|error| format!("failed to delete media metadata: {error}"))?;
+        transaction
+            .execute("delete from media_items where id = ?1", params![media_id])
+            .map_err(|error| format!("failed to delete media item: {error}"))?;
+    }
+    transaction
+        .commit()
+        .map_err(|error| format!("failed to commit media deletion transaction: {error}"))?;
     Ok(())
 }
 
@@ -361,7 +434,8 @@ fn initialize_database(connection: &Connection) -> Result<(), String> {
                 root_id text not null,
                 name text not null,
                 path text not null,
-                media_type text not null
+                media_type text not null,
+                content_hash text
             );
             create table if not exists media_metadata (
                 media_id text primary key,
@@ -383,6 +457,7 @@ fn initialize_database(connection: &Connection) -> Result<(), String> {
             );",
         )
         .map_err(|error| format!("failed to initialize database: {error}"))?;
+    ensure_column(connection, "media_items", "content_hash", "text")?;
     ensure_column(
         connection,
         "face_candidates",
@@ -408,6 +483,168 @@ fn initialize_database(connection: &Connection) -> Result<(), String> {
         "real not null default 0",
     )?;
     Ok(())
+}
+
+fn load_roots(connection: &Connection) -> Result<Vec<LibraryRoot>, String> {
+    let mut statement = connection
+        .prepare(
+            "select id, name, path from library_roots order by name collate nocase, path collate nocase",
+        )
+        .map_err(|error| format!("failed to load library roots: {error}"))?;
+    let roots = statement
+        .query_map([], |row| {
+            Ok(LibraryRoot {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                path: row.get(2)?,
+                status: LibraryRootStatus::Ready,
+                photo_count: 0,
+                video_count: 0,
+                media_count: 0,
+            })
+        })
+        .map_err(|error| format!("failed to load library roots: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed to load library roots: {error}"))?;
+    Ok(roots)
+}
+
+fn load_media_items(connection: &Connection) -> Result<Vec<MediaItem>, String> {
+    let mut statement = connection
+        .prepare(
+            "select id, root_id, name, path, media_type, content_hash from media_items order by path collate nocase",
+        )
+        .map_err(|error| format!("failed to load media items: {error}"))?;
+    let media_items = statement
+        .query_map([], |row| {
+            let media_type = row.get::<_, String>(4)?;
+            Ok(MediaItem {
+                id: row.get(0)?,
+                root_id: row.get(1)?,
+                name: row.get(2)?,
+                path: row.get(3)?,
+                media_type: media_type_from_database(&media_type),
+                content_hash: row.get(5)?,
+            })
+        })
+        .map_err(|error| format!("failed to load media items: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed to load media items: {error}"))?;
+    Ok(media_items)
+}
+
+fn load_metadata(connection: &Connection) -> Result<Vec<MediaMetadata>, String> {
+    let mut tags_statement = connection
+        .prepare("select media_id, tag from media_tags order by media_id, tag collate nocase")
+        .map_err(|error| format!("failed to load media tags: {error}"))?;
+    let mut tags_by_media = std::collections::BTreeMap::<String, Vec<String>>::new();
+    for tag in tags_statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| format!("failed to load media tags: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed to load media tags: {error}"))?
+    {
+        tags_by_media.entry(tag.0).or_default().push(tag.1);
+    }
+
+    let mut statement = connection
+        .prepare("select media_id, favorite from media_metadata order by media_id")
+        .map_err(|error| format!("failed to load media metadata: {error}"))?;
+    let metadata = statement
+        .query_map([], |row| {
+            let media_id = row.get::<_, String>(0)?;
+            Ok(MediaMetadata {
+                tags: tags_by_media.remove(&media_id).unwrap_or_default(),
+                media_id,
+                favorite: row.get::<_, i64>(1)? != 0,
+                face_ids: Vec::new(),
+            })
+        })
+        .map_err(|error| format!("failed to load media metadata: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed to load media metadata: {error}"))?;
+    Ok(metadata)
+}
+
+fn load_faces(connection: &Connection) -> Result<Vec<FaceCandidate>, String> {
+    let mut statement = connection
+        .prepare(
+            "select id, media_id, name, confidence, x, y, width, height from face_candidates order by media_id, id",
+        )
+        .map_err(|error| format!("failed to load face candidates: {error}"))?;
+    let faces = statement
+        .query_map([], |row| {
+            Ok(FaceCandidate {
+                id: row.get(0)?,
+                media_id: row.get(1)?,
+                name: row.get(2)?,
+                confidence: row.get(3)?,
+                x: row.get(4)?,
+                y: row.get(5)?,
+                width: row.get(6)?,
+                height: row.get(7)?,
+            })
+        })
+        .map_err(|error| format!("failed to load face candidates: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed to load face candidates: {error}"))?;
+    Ok(faces)
+}
+
+fn delete_media_rows(
+    connection: &Connection,
+    root_id: &str,
+    media_ids: Option<&[String]>,
+) -> Result<(), String> {
+    let target_ids = if let Some(media_ids) = media_ids {
+        media_ids.to_vec()
+    } else {
+        let mut statement = connection
+            .prepare("select id from media_items where root_id = ?1")
+            .map_err(|error| format!("failed to load media IDs for deletion: {error}"))?;
+        let media_ids = statement
+            .query_map(params![root_id], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("failed to load media IDs for deletion: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("failed to load media IDs for deletion: {error}"))?;
+        media_ids
+    };
+
+    for media_id in target_ids {
+        connection
+            .execute(
+                "delete from face_candidates where media_id = ?1",
+                params![&media_id],
+            )
+            .map_err(|error| format!("failed to delete face candidates: {error}"))?;
+        connection
+            .execute(
+                "delete from media_tags where media_id = ?1",
+                params![&media_id],
+            )
+            .map_err(|error| format!("failed to delete media tags: {error}"))?;
+        connection
+            .execute(
+                "delete from media_metadata where media_id = ?1",
+                params![&media_id],
+            )
+            .map_err(|error| format!("failed to delete media metadata: {error}"))?;
+        connection
+            .execute("delete from media_items where id = ?1", params![&media_id])
+            .map_err(|error| format!("failed to delete media item: {error}"))?;
+    }
+
+    Ok(())
+}
+
+fn media_type_from_database(value: &str) -> MediaType {
+    if value.eq_ignore_ascii_case("video") {
+        MediaType::Video
+    } else {
+        MediaType::Photo
+    }
 }
 
 fn ensure_column(
