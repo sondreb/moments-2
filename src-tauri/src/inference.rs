@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     collections::hash_map::DefaultHasher,
     fs,
     hash::{Hash, Hasher},
@@ -58,29 +59,78 @@ pub fn classify_image(
 pub fn detect_faces(
     model_path: &Path,
     image_path: &Path,
-    cache_dir: &Path,
+    _cache_dir: &Path,
     media_id: &str,
 ) -> Result<Vec<FaceCandidate>, String> {
-    let input_image = load_or_create_inference_image(image_path, cache_dir, "faces", FACE_SIZE)?;
+    let input_image = load_face_inference_image(image_path)?;
+    eprintln!(
+        "[face-detect] media={media_id} image={} model={} input={}x{} content={}x{} offset=({:.1},{:.1})",
+        image_path.display(),
+        model_path.display(),
+        input_image.image.width(),
+        input_image.image.height(),
+        input_image.geometry.content_width,
+        input_image.geometry.content_height,
+        input_image.geometry.content_x,
+        input_image.geometry.content_y,
+    );
     let input = face_tensor(&input_image.image)?;
     let mut session = load_session(model_path)?;
     let outputs = session
         .run(inputs![input])
         .map_err(|error| format!("face detection inference failed: {error}"))?;
 
-    let mut detections = Vec::new();
-    for (_, output) in outputs.iter() {
+    let mut named_outputs = HashMap::new();
+    let mut output_logs = Vec::new();
+    for (name, output) in outputs.iter() {
         let Ok((shape, values)) = output.try_extract_tensor::<f32>() else {
+            output_logs.push(format!("{name}: non-f32 tensor skipped"));
             continue;
         };
-        detections.extend(face_detections_from_output(&shape.to_vec(), values));
+        output_logs.push(format!(
+            "{name}: shape={:?} values={}",
+            shape,
+            values.len(),
+        ));
+        named_outputs.insert(
+            name.to_string(),
+            FaceOutputTensor {
+                shape: shape.to_vec(),
+                values: values.to_vec(),
+            },
+        );
     }
 
-    Ok(face_candidates_from_detections(
+    let (detections, decode_logs) = decode_yunet_outputs(
+        &named_outputs,
+        input_image.image.width() as usize,
+        input_image.image.height() as usize,
+        &input_image.geometry,
+    );
+    output_logs.extend(decode_logs);
+
+    eprintln!("[face-detect] media={media_id} outputs: {}", output_logs.join(" | "));
+
+    let faces = face_candidates_from_detections(
         media_id,
         detections,
         input_image.geometry,
-    ))
+    );
+    let confidences = faces
+        .iter()
+        .take(5)
+        .map(|face| format!("{:.4}", face.confidence))
+        .collect::<Vec<_>>()
+        .join(", ");
+    eprintln!(
+        "[face-detect] media={media_id} finalFaces={} topConfidences=[{}] threshold={} nmsIou={}",
+        faces.len(),
+        confidences,
+        FACE_CONFIDENCE_THRESHOLD,
+        FACE_NMS_IOU_THRESHOLD,
+    );
+
+    Ok(faces)
 }
 
 fn load_session(model_path: &Path) -> Result<Session, String> {
@@ -136,6 +186,17 @@ fn load_or_create_inference_image(
     })?;
     Ok(InferenceImage {
         image: DynamicImage::ImageRgb8(thumbnail),
+        geometry,
+    })
+}
+
+fn load_face_inference_image(source_path: &Path) -> Result<InferenceImage, String> {
+    let source = load_rgb_image(source_path)?;
+    let geometry = SquareGeometry::from_source(source.width(), source.height(), FACE_SIZE);
+    let canvas = square_thumbnail(&source, FACE_SIZE);
+
+    Ok(InferenceImage {
+        image: DynamicImage::ImageRgb8(canvas),
         geometry,
     })
 }
@@ -209,19 +270,19 @@ fn classification_tensor(image: &DynamicImage) -> Result<Tensor<f32>, String> {
 }
 
 fn face_tensor(image: &DynamicImage) -> Result<Tensor<f32>, String> {
-    let resized = image
-        .resize_exact(FACE_SIZE, FACE_SIZE, FilterType::Triangle)
-        .to_rgb8();
-    let mut input = Vec::with_capacity((3 * FACE_SIZE * FACE_SIZE) as usize);
+    let rgb = image.to_rgb8();
+    let width = rgb.width() as usize;
+    let height = rgb.height() as usize;
+    let mut input = Vec::with_capacity(3 * width * height);
 
-    for channel in 0..3 {
-        for pixel in resized.pixels() {
-            input.push(pixel[channel] as f32);
+    for source_index in [2_usize, 1, 0] {
+        for pixel in rgb.pixels() {
+            input.push(pixel[source_index] as f32);
         }
     }
 
     Tensor::from_array((
-        [1_usize, 3, FACE_SIZE as usize, FACE_SIZE as usize],
+        [1_usize, 3, height, width],
         input.into_boxed_slice(),
     ))
     .map_err(|error| format!("failed to build face detection tensor: {error}"))
@@ -263,72 +324,183 @@ fn face_candidates_from_detections(
         .collect()
 }
 
-fn face_detections_from_output(shape: &[i64], values: &[f32]) -> Vec<FaceDetection> {
-    if values.is_empty() || shape.is_empty() {
-        return Vec::new();
-    }
+fn decode_yunet_outputs(
+    outputs: &HashMap<String, FaceOutputTensor>,
+    input_width: usize,
+    input_height: usize,
+    geometry: &SquareGeometry,
+) -> (Vec<FaceDetection>, Vec<String>) {
+    let mut detections = Vec::new();
+    let mut logs = Vec::new();
 
-    if let Some(width) = shape.last().copied().filter(|width| *width >= 15) {
-        return values
-            .chunks(width as usize)
-            .filter_map(face_detection_from_row)
-            .collect();
-    }
+    for stride in [8_u32, 16, 32] {
+        let cls_name = format!("cls_{stride}");
+        let obj_name = format!("obj_{stride}");
+        let bbox_name = format!("bbox_{stride}");
+        let kps_name = format!("kps_{stride}");
 
-    if values.len() >= 15 && values.len() % 15 == 0 {
-        return values
-            .chunks(15)
-            .filter_map(face_detection_from_row)
-            .collect();
-    }
+        let Some(cls) = outputs.get(&cls_name) else {
+            logs.push(format!("stride={stride}: missing {cls_name}"));
+            continue;
+        };
+        let Some(obj) = outputs.get(&obj_name) else {
+            logs.push(format!("stride={stride}: missing {obj_name}"));
+            continue;
+        };
+        let Some(bbox) = outputs.get(&bbox_name) else {
+            logs.push(format!("stride={stride}: missing {bbox_name}"));
+            continue;
+        };
+        let Some(kps) = outputs.get(&kps_name) else {
+            logs.push(format!("stride={stride}: missing {kps_name}"));
+            continue;
+        };
 
-    if shape.len() >= 3 {
-        let attributes = shape[shape.len() - 2] as usize;
-        let candidates = shape[shape.len() - 1] as usize;
-        if attributes >= 15 && values.len() >= attributes * candidates {
-            return (0..candidates)
-                .filter_map(|candidate| {
-                    let row = (0..attributes)
-                        .map(|attribute| values[attribute * candidates + candidate])
-                        .collect::<Vec<_>>();
-                    face_detection_from_row(&row)
-                })
-                .collect();
+        let cols = input_width.div_ceil(stride as usize);
+        let rows = input_height.div_ceil(stride as usize);
+        let candidate_count = rows * cols;
+
+        let Some(cls_scores) = extract_scores(cls, candidate_count) else {
+            logs.push(format!("stride={stride}: could not decode cls tensor {:?}", cls.shape));
+            continue;
+        };
+        let Some(obj_scores) = extract_scores(obj, candidate_count) else {
+            logs.push(format!("stride={stride}: could not decode obj tensor {:?}", obj.shape));
+            continue;
+        };
+        let Some(bbox_rows) = extract_rows(bbox, candidate_count, 4) else {
+            logs.push(format!("stride={stride}: could not decode bbox tensor {:?}", bbox.shape));
+            continue;
+        };
+        let Some(_kps_rows) = extract_rows(kps, candidate_count, 10) else {
+            logs.push(format!("stride={stride}: could not decode kps tensor {:?}", kps.shape));
+            continue;
+        };
+
+        let before = detections.len();
+        let mut best_confidence = 0.0_f32;
+        for index in 0..candidate_count {
+            let cls_score = cls_scores[index].clamp(0.0, 1.0);
+            let obj_score = obj_scores[index].clamp(0.0, 1.0);
+            let score = (cls_score * obj_score).sqrt();
+            best_confidence = best_confidence.max(score);
+            if score < FACE_CONFIDENCE_THRESHOLD {
+                continue;
+            }
+
+            let row = &bbox_rows[index * 4..index * 4 + 4];
+            let col = index % cols;
+            let r = index / cols;
+            let stride_f = stride as f32;
+            let cx = (col as f32 + row[0]) * stride_f;
+            let cy = (r as f32 + row[1]) * stride_f;
+            let width = row[2].exp() * stride_f;
+            let height = row[3].exp() * stride_f;
+            let x = cx - width / 2.0;
+            let y = cy - height / 2.0;
+
+            if let Some(detection) = face_detection_from_box(
+                x,
+                y,
+                width,
+                height,
+                score,
+                geometry,
+                input_width as f32,
+                input_height as f32,
+            ) {
+                detections.push(detection);
+            }
         }
+
+        logs.push(format!(
+            "stride={stride}: candidateRows={} acceptedRows={} bestConfidence={:.4}",
+            candidate_count,
+            detections.len() - before,
+            best_confidence,
+        ));
     }
 
-    Vec::new()
+    (detections, logs)
 }
 
-fn face_detection_from_row(row: &[f32]) -> Option<FaceDetection> {
-    if row.len() < 15 {
+fn extract_scores(tensor: &FaceOutputTensor, candidate_count: usize) -> Option<Vec<f32>> {
+    if tensor.values.len() == candidate_count {
+        return Some(tensor.values.clone());
+    }
+    if tensor.values.len() >= candidate_count && tensor.shape.last().copied() == Some(candidate_count as i64) {
+        return Some(tensor.values[..candidate_count].to_vec());
+    }
+    if tensor.values.len() >= candidate_count && tensor.shape.contains(&1) {
+        return Some(tensor.values[..candidate_count].to_vec());
+    }
+    None
+}
+
+fn extract_rows(tensor: &FaceOutputTensor, candidate_count: usize, attributes: usize) -> Option<Vec<f32>> {
+    let required = candidate_count * attributes;
+    if tensor.values.len() < required {
         return None;
     }
 
-    let confidence = row[14];
+    if tensor.shape.last().copied() == Some(attributes as i64) {
+        return Some(tensor.values[..required].to_vec());
+    }
 
-    if !confidence.is_finite() || confidence < FACE_CONFIDENCE_THRESHOLD || row.len() < 4 {
+    if tensor.shape.len() >= 4 && tensor.shape[1] == attributes as i64 {
+        let mut rows = vec![0.0; required];
+        for attribute in 0..attributes {
+            for candidate in 0..candidate_count {
+                rows[candidate * attributes + attribute] = tensor.values[attribute * candidate_count + candidate];
+            }
+        }
+        return Some(rows);
+    }
+
+    if tensor.shape.len() >= 3
+        && tensor.shape[tensor.shape.len() - 2] == attributes as i64
+        && tensor.shape[tensor.shape.len() - 1] == candidate_count as i64
+    {
+        let mut rows = vec![0.0; required];
+        for attribute in 0..attributes {
+            for candidate in 0..candidate_count {
+                rows[candidate * attributes + attribute] = tensor.values[attribute * candidate_count + candidate];
+            }
+        }
+        return Some(rows);
+    }
+
+    Some(tensor.values[..required].to_vec())
+}
+
+fn face_detection_from_box(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    confidence: f32,
+    _geometry: &SquareGeometry,
+    input_width: f32,
+    input_height: f32,
+) -> Option<FaceDetection> {
+    if !confidence.is_finite() || confidence < FACE_CONFIDENCE_THRESHOLD {
         return None;
     }
 
-    let x = row[0];
-    let y = row[1];
-    let width = row[2].abs();
-    let height = row[3].abs();
     let values_are_finite = [x, y, width, height].iter().all(|value| value.is_finite());
     let aspect_ratio = width.abs() / height.abs().max(1.0);
     let face_area = width.abs() * height.abs();
-    let canvas_area = (FACE_SIZE * FACE_SIZE) as f32;
+    let canvas_area = input_width * input_height;
     if !values_are_finite
         || width <= 6.0
         || height <= 6.0
         || face_area < 144.0
         || face_area > canvas_area * 0.72
         || !(0.45..=1.9).contains(&aspect_ratio)
-        || x < -(FACE_SIZE as f32 * 0.1)
-        || y < -(FACE_SIZE as f32 * 0.1)
-        || x > FACE_SIZE as f32 * 1.1
-        || y > FACE_SIZE as f32 * 1.1
+        || x < -(input_width * 0.1)
+        || y < -(input_height * 0.1)
+        || x > input_width * 1.1
+        || y > input_height * 1.1
     {
         return None;
     }
@@ -365,6 +537,11 @@ struct FaceBounds {
     y: f32,
     width: f32,
     height: f32,
+}
+
+struct FaceOutputTensor {
+    shape: Vec<i64>,
+    values: Vec<f32>,
 }
 
 struct InferenceImage {

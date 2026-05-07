@@ -1,13 +1,19 @@
 <main class="app-shell" [class.dark-theme]="effectiveTheme() === 'dark'" [class.sidebar-hidden]="!sidebarVisible()" [class.inspector-hidden]="!inspectorVisible()" [class.detail-open]="isDetailOpen()" [class.settings-open]="isSettingsOpen()">
-  <aside class="sidebar" aria-label="Library folders" *ngIf="sidebarVisible() && !isDetailOpen()">
-    <div class="brand-block">
-      <img class="brand-mark" src="/assets/moments-mark.svg" alt="Moments" />
-      <div>
-        <h1>Moments</h1>
-        <p>Photos</p>
-      </div>
+  <button
+    class="brand-block app-brand-toggle"
+    type="button"
+    [class.floating-brand]="!sidebarVisible() || isDetailOpen()"
+    [attr.aria-pressed]="sidebarVisible() && !isDetailOpen()"
+    [attr.aria-label]="sidebarVisible() && !isDetailOpen() ? 'Hide sidebar' : 'Show sidebar'"
+    (click)="toggleSidebar()"
+  >
+    <img class="brand-mark" src="/assets/moments-mark.svg" alt="" />
+    <div>
+      <h1>Moments</h1>
     </div>
+  </button>
 
+  <aside class="sidebar" aria-label="Library folders" *ngIf="sidebarVisible() && !isDetailOpen()">
     <nav class="primary-nav" aria-label="Moments sections">
       <button class="nav-row" type="button" [class.active]="activeView() === 'library' && !isSettingsOpen()" (click)="showView('library')"><span aria-hidden="true">▣</span> Library</button>
       <button class="nav-row" type="button" [class.active]="activeView() === 'favorites' && !isSettingsOpen()" (click)="showView('favorites')"><span aria-hidden="true">♥</span> Favorites <small>{{ favoriteCount() }}</small></button>
@@ -50,7 +56,6 @@
   <section class="workspace" aria-label="Gallery workspace">
     <header class="toolbar" *ngIf="!isDetailOpen() && !isSettingsOpen()">
       <div class="toolbar-title">
-        <button class="icon-action" type="button" title="Show folders" (click)="sidebarVisible.set(!sidebarVisible())">☰</button>
         <div>
           <p class="eyebrow">{{ overview().rootCount }} folders · {{ totalMedia() }} media</p>
           <h2>{{ activeViewTitle() }}</h2>
@@ -84,8 +89,14 @@
       </div>
     </header>
 
-    <p class="error-banner" *ngIf="errorMessage()">{{ errorMessage() }}</p>
-    <p class="analysis-banner" *ngIf="analysisMessage()">{{ analysisMessage() }}</p>
+    <div class="banner error-banner" *ngIf="errorMessage() as message" role="status" aria-live="polite">
+      <p>{{ message }}</p>
+      <button class="banner-dismiss" type="button" aria-label="Dismiss message" (click)="dismissErrorMessage()">×</button>
+    </div>
+    <div class="banner analysis-banner" *ngIf="analysisMessage() as message" role="status" aria-live="polite">
+      <p>{{ message }}</p>
+      <button class="banner-dismiss" type="button" aria-label="Dismiss message" (click)="dismissAnalysisMessage()">×</button>
+    </div>
 
     <section class="gallery-stage" aria-label="Media">
       <app-settings
@@ -141,7 +152,7 @@
             <button class="icon-action" type="button" title="Zoom out" [disabled]="item.mediaType !== 'photo'" (click)="zoomOut()">−</button>
             <button class="zoom-value" type="button" title="Reset zoom" [disabled]="item.mediaType !== 'photo'" (click)="resetZoom()">{{ zoom() }}%</button>
             <button class="icon-action" type="button" title="Zoom in" [disabled]="item.mediaType !== 'photo'" (click)="zoomIn()">+</button>
-            <button class="ghost-action" type="button" (click)="openNative(item)">Open native</button>
+            <button class="ghost-action" type="button" (click)="openNative(item)">Open</button>
             <button class="icon-action close-button" type="button" title="Back to gallery" (click)="closeDetail()">×</button>
           </div>
         </div>
@@ -277,7 +288,7 @@
 
   <div class="media-context-menu" *ngIf="mediaContextMenu() as menu" [style.left.px]="menu.x" [style.top.px]="menu.y" (click)="keepMediaContextMenuOpen($event)">
     <button type="button" (click)="openInFileExplorer(menu.item)">Open in File Explorer</button>
-    <button type="button" (click)="openNative(menu.item)">Open native</button>
+    <button type="button" (click)="openNative(menu.item)">Open</button>
   </div>
 
   <aside class="inspector" aria-label="Inspector" *ngIf="inspectorVisible()">

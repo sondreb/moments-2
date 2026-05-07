@@ -1,4 +1,5 @@
 .app-shell {
+  --floating-brand-inset: 68px;
   --bg: #f6f5ef;
   --panel: rgba(232, 226, 200, 0.72);
   --panel-strong: rgba(255, 255, 255, 0.86);
@@ -14,6 +15,7 @@
 
   height: 100vh;
   min-height: 0;
+  position: relative;
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr) 300px;
   background: var(--bg);
@@ -66,7 +68,7 @@
 
 .sidebar {
   border-width: 0 1px 0 0;
-  padding: 10px 10px 14px;
+  padding: 62px 10px 14px;
 }
 
 .inspector {
@@ -79,14 +81,52 @@
   display: flex;
   gap: 8px;
   align-items: center;
-  margin-bottom: 14px;
   padding: 0 2px;
 }
 
+.app-brand-toggle {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  z-index: 6;
+  min-height: 40px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+
+.app-brand-toggle:hover {
+  background: rgba(255, 255, 255, 0.34);
+}
+
+.dark-theme .app-brand-toggle:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.floating-brand {
+  padding-inline: 12px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: var(--shadow);
+  -webkit-backdrop-filter: blur(14px) saturate(1.15);
+  backdrop-filter: blur(14px) saturate(1.15);
+}
+
+.floating-brand h1 {
+  display: none;
+}
+
+.dark-theme .floating-brand {
+  background: rgba(31, 32, 34, 0.78);
+}
+
 .brand-mark {
-  width: 24px;
-  height: 24px;
-  border-radius: 5px;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
   box-shadow: 0 5px 14px rgba(16, 25, 35, 0.14);
 }
 
@@ -98,8 +138,9 @@ p {
 }
 
 h1 {
-  font-size: 12px;
-  line-height: 1.2;
+  font-size: 23px;
+  line-height: 1;
+  font-weight: 800;
 }
 
 h2 {
@@ -111,7 +152,6 @@ h3 {
   font-size: 18px;
 }
 
-.brand-block p,
 .eyebrow,
 small,
 dt {
@@ -250,6 +290,45 @@ button:disabled {
   gap: 2px;
 }
 
+.sidebar,
+.gallery-stage,
+.inspector,
+.carousel-track {
+  --scrollbar-thumb: rgba(96, 91, 78, 0.38);
+}
+
+.dark-theme .sidebar,
+.dark-theme .gallery-stage,
+.dark-theme .inspector,
+.dark-theme .carousel-track {
+  --scrollbar-thumb: rgba(255, 255, 255, 0.24);
+}
+
+.sidebar::-webkit-scrollbar,
+.gallery-stage::-webkit-scrollbar,
+.inspector::-webkit-scrollbar,
+.carousel-track::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.sidebar::-webkit-scrollbar-track,
+.gallery-stage::-webkit-scrollbar-track,
+.inspector::-webkit-scrollbar-track,
+.carousel-track::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar::-webkit-scrollbar-thumb,
+.gallery-stage::-webkit-scrollbar-thumb,
+.inspector::-webkit-scrollbar-thumb,
+.carousel-track::-webkit-scrollbar-thumb {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: var(--scrollbar-thumb);
+  background-clip: padding-box;
+}
+
 .folder-row {
   width: 100%;
   display: grid;
@@ -374,8 +453,16 @@ dd {
   backdrop-filter: blur(18px) saturate(1.15);
 }
 
+.app-shell.sidebar-hidden .toolbar {
+  padding-left: calc(12px + var(--floating-brand-inset));
+}
+
+.app-shell.sidebar-hidden .banner {
+  margin-left: calc(18px + var(--floating-brand-inset));
+}
+
 .toolbar-title {
-  min-width: 220px;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -456,12 +543,19 @@ dd {
   box-shadow: 0 1px 4px rgba(16, 25, 35, 0.12);
 }
 
-.error-banner,
-.analysis-banner {
+.banner {
   margin: 10px 18px 0;
   padding: 10px 12px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
   border-radius: 8px;
   border: 1px solid #fed7d7;
+}
+
+.banner p {
+  flex: 1;
 }
 
 .error-banner {
@@ -473,6 +567,27 @@ dd {
   background: rgba(33, 133, 255, 0.12);
   border-color: rgba(33, 133, 255, 0.22);
   color: var(--text);
+}
+
+.banner-dismiss {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.banner-dismiss:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.dark-theme .banner-dismiss:hover {
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .gallery-stage {
@@ -551,8 +666,10 @@ dd {
 }
 
 .detail-view {
+  --thumb-size: 136px;
   position: relative;
   flex: 1;
+  height: 100%;
   min-height: 0;
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto auto;
@@ -671,8 +788,10 @@ dd {
   position: relative;
   width: 100%;
   height: 100%;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
   transform-origin: center center;
   transition: transform 0.08s ease-out;
   pointer-events: none;
@@ -683,9 +802,10 @@ dd {
 }
 
 .face-frame img {
-  grid-area: 1 / 1;
-  width: 100%;
-  height: 100%;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
 }
 
 .face-box {
@@ -739,6 +859,7 @@ dd {
 .viewer-carousel {
   grid-row: 2;
   min-height: 88px;
+  max-height: calc(clamp(52px, calc(var(--thumb-size, 136px) * 0.7), 104px) + 28px);
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 10px;
@@ -746,6 +867,7 @@ dd {
   padding: 10px 12px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   background: linear-gradient(180deg, rgba(18, 22, 28, 0.94), rgba(12, 16, 21, 0.98));
+  overflow: hidden;
 }
 
 .carousel-track {
@@ -759,8 +881,8 @@ dd {
 
 .carousel-item {
   flex: 0 0 auto;
-  width: clamp(52px, calc(var(--thumb-size) * 0.7), 104px);
-  height: clamp(52px, calc(var(--thumb-size) * 0.7), 104px);
+  width: clamp(52px, calc(var(--thumb-size, 136px) * 0.7), 104px);
+  height: clamp(52px, calc(var(--thumb-size, 136px) * 0.7), 104px);
   padding: 0;
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 10px;

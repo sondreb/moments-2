@@ -272,8 +272,10 @@ export class AppComponent implements OnInit {
     transform: `translate3d(${this.panX()}px, ${this.panY()}px, 0) scale(${this.zoom() / 100})`,
   }));
   protected readonly selectedImageStyle = computed(() => ({
-    width: "100%",
-    height: "100%",
+    width: "auto",
+    height: "auto",
+    maxWidth: "100%",
+    maxHeight: "100%",
   }));
   protected readonly totalMedia = computed(() => this.overview().mediaCount.toLocaleString());
   protected readonly isScanningFaces = computed(() => this.currentAnalysisTask() === "faces");
@@ -578,6 +580,14 @@ export class AppComponent implements OnInit {
     }
   }
 
+  protected dismissErrorMessage(): void {
+    this.errorMessage.set(null);
+  }
+
+  protected dismissAnalysisMessage(): void {
+    this.analysisMessage.set("");
+  }
+
   protected closeDetail(): void {
     this.isDetailOpen.set(false);
     this.zoom.set(100);
@@ -814,6 +824,10 @@ export class AppComponent implements OnInit {
     const shouldShow = !(this.sidebarVisible() || this.inspectorVisible());
     this.sidebarVisible.set(shouldShow);
     this.inspectorVisible.set(shouldShow);
+  }
+
+  protected toggleSidebar(): void {
+    this.sidebarVisible.update((visible) => !visible);
   }
 
   protected isSelected(root: LibraryRoot): boolean {
