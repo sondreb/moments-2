@@ -7,12 +7,22 @@
     [attr.aria-pressed]="sidebarVisible() && !isDetailOpen()"
     [attr.aria-label]="sidebarVisible() && !isDetailOpen() ? 'Hide sidebar' : 'Show sidebar'"
     (click)="toggleSidebar()"
+    (contextmenu)="openSpaceMenu($event)"
   >
     <img class="brand-mark" src="/assets/moments-mark.svg" alt="" />
     <div *ngIf="sidebarVisible() && !isDetailOpen()">
       <h1>Moments</h1>
     </div>
   </button>
+
+  <div class="space-menu" *ngIf="spaceMenuOpen() && !isDetailOpen()" (click)="keepSpaceMenuOpen($event)">
+    <p class="eyebrow">Spaces</p>
+    <button class="space-row" type="button" *ngFor="let space of spaces()" [class.active]="space.id === currentSpaceId()" (click)="switchSpace(space)">
+      <span>{{ space.name }}</span>
+      <small *ngIf="space.id === currentSpaceId()">Current</small>
+    </button>
+    <button class="ghost-action compact" type="button" (click)="createSpace()">New space</button>
+  </div>
 
   <aside class="sidebar" aria-label="Library folders" *ngIf="sidebarVisible() && !isDetailOpen()">
     <nav class="primary-nav" aria-label="Moments sections">
@@ -29,6 +39,9 @@
       <span aria-hidden="true">+</span>
       Add folder
     </button>
+
+    <p class="sidebar-label">Space</p>
+    <button class="space-pill" type="button" (click)="openSpaceMenu($event)">{{ currentSpaceName() }}</button>
 
     <p class="sidebar-label">Folders</p>
     <nav class="folder-list" aria-label="Folders">
@@ -75,6 +88,22 @@
           <button type="button" [class.active]="thumbnailLayoutMode() === 'square'" (click)="setThumbnailLayoutMode('square')">Squares</button>
           <button type="button" [class.active]="thumbnailLayoutMode() === 'full'" (click)="setThumbnailLayoutMode('full')">Full</button>
           <button type="button" [class.active]="thumbnailLayoutMode() === 'dynamic'" (click)="setThumbnailLayoutMode('dynamic')">Dynamic</button>
+        </div>
+        <div class="toolbar-popover-group" (click)="keepSpaceMenuOpen($event)">
+          <button class="ghost-action" type="button" (click)="toggleTagFilterMenu($event)">
+            Tags
+            <small *ngIf="activeTagFilters().length">{{ activeTagFilters().length }}</small>
+          </button>
+          <div class="tag-filter-menu" *ngIf="tagFilterMenuOpen()">
+            <div class="tag-filter-header">
+              <strong>Filter tags</strong>
+              <button class="ghost-action compact" type="button" (click)="clearTagFilters()" [disabled]="activeTagFilters().length === 0">Clear</button>
+            </div>
+            <p class="metadata-note" *ngIf="availableFilterTags().length === 0">Scan features to populate filterable tags.</p>
+            <div class="tag-filter-list" *ngIf="availableFilterTags().length > 0">
+              <button class="tag-chip" type="button" *ngFor="let tag of availableFilterTags()" [class.active]="hasActiveTagFilter(tag)" (click)="toggleTagFilter(tag)">{{ tag }}</button>
+            </div>
+          </div>
         </div>
         <label class="thumbnail-slider" aria-label="Thumbnail size">
           <span class="thumbnail-size-icon" aria-hidden="true">▥</span>
@@ -165,7 +194,17 @@
               (load)="handleSelectedImageLoad($event)"
               [ngStyle]="selectedImageStyle()"
             />
-            <span class="face-box" *ngFor="let face of selectedFaceAnalysis()?.faces" [ngStyle]="faceBoxStyle(face)" [title]="(face.name || 'Face') + ' · ' + (face.confidence | percent)"></span>
+            <div class="face-box" *ngFor="let face of selectedFaceAnalysis()?.faces" [ngStyle]="faceBoxStyle(face)" [class.hovered]="hoveredFaceId() === face.id" [title]="(face.name || 'Face') + ' · ' + (face.confidence | percent)" (pointerenter)="hoverFace(face, $event)" (pointerleave)="leaveFace(face, $event)" (click)="$event.stopPropagation()">
+              <span class="face-label" *ngIf="face.name">{{ face.name }}</span>
+              <div class="face-hover-card" *ngIf="hoveredFaceId() === face.id" (pointerenter)="hoverFace(face, $event)" (pointerleave)="leaveFace(face, $event)" (click)="$event.stopPropagation()">
+                <strong>{{ face.name || 'Unnamed face' }}</strong>
+                <small>{{ face.confidence | percent }}</small>
+                <select aria-label="Assign detected face to person" [value]="face.name || ''" (change)="renameFace(face, $any($event.target).value)">
+                  <option value="">Unassigned</option>
+                  <option *ngFor="let person of knownPeopleOptions()" [value]="person">{{ person }}</option>
+                </select>
+              </div>
+            </div>
           </div>
           <video *ngIf="item.mediaType === 'video'" [src]="mediaUrl(item)" controls autoplay></video>
           <nav class="viewer-carousel" aria-label="Other photos" *ngIf="detailMediaItems().length > 1" [class.visible]="detailCarouselVisible()" (pointerenter)="holdDetailCarousel()" (pointerleave)="scheduleDetailCarouselHide()" (focusin)="holdDetailCarousel()" (focusout)="scheduleDetailCarouselHide()">
@@ -337,7 +376,11 @@
         <div class="face-list" *ngIf="selectedFaceAnalysis()?.faces?.length">
           <label class="face-row" *ngFor="let face of selectedFaceAnalysis()?.faces">
             <span>Face {{ face.confidence | percent }}</span>
-            <input type="text" [value]="face.name || ''" placeholder="Name person" (change)="renameFace(face, $event)" />
+            <select [value]="face.name || ''" (change)="renameFace(face, $any($event.target).value)">
+              <option value="">Pick existing person</option>
+              <option *ngFor="let person of knownPeopleOptions()" [value]="person">{{ person }}</option>
+            </select>
+            <input type="text" [value]="face.name || ''" placeholder="Or type a new person" (change)="renameFace(face, $event)" />
           </label>
         </div>
       </section>

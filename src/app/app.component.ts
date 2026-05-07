@@ -106,6 +106,16 @@ interface DuplicateGroup {
   items: MediaItem[];
 }
 
+interface AppSpace {
+  id: string;
+  name: string;
+}
+
+interface SpaceCatalog {
+  currentSpaceId: string;
+  spaces: AppSpace[];
+}
+
 interface PersonResult {
   face: FaceCandidate;
   media: MediaItem | null;
@@ -187,6 +197,13 @@ export class AppComponent implements OnInit {
   protected readonly duplicateFilterRootId = signal<string | null>(null);
   protected readonly duplicateDeleteSelection = signal<Set<string>>(new Set());
   protected readonly mediaContextMenu = signal<MediaContextMenuState | null>(null);
+  protected readonly spaces = signal<AppSpace[]>([]);
+  protected readonly currentSpaceId = signal("main");
+  protected readonly knownPeople = signal<string[]>([]);
+  protected readonly spaceMenuOpen = signal(false);
+  protected readonly tagFilterMenuOpen = signal(false);
+  protected readonly activeTagFilters = signal<string[]>([]);
+  protected readonly hoveredFaceId = signal<string | null>(null);
   private readonly viewerSurfaceRef = viewChild<ElementRef<HTMLElement>>("viewerSurface");
   private webSampleMedia: MediaItem[] = [];
   private detailToolbarTimer: ReturnType<typeof setTimeout> | null = null;
@@ -199,7 +216,7 @@ export class AppComponent implements OnInit {
   private readonly persistSelectedRoot = effect(() => {
     const selectedRootId = this.selectedRootId();
     if (selectedRootId) {
-      localStorage.setItem("moments.selectedRootId", selectedRootId);
+      localStorage.setItem(this.selectedRootStorageKey(), selectedRootId);
     }
   });
 
@@ -225,12 +242,17 @@ export class AppComponent implements OnInit {
     localStorage.setItem("moments.thumbnailLayoutMode", this.thumbnailLayoutMode());
   });
 
+  private readonly persistTagFilters = effect(() => {
+    localStorage.setItem("moments.activeTagFilters", JSON.stringify(this.activeTagFilters()));
+  });
+
   protected readonly selectedRoot = computed(() => {
     const selectedRootId = this.selectedRootId();
     return this.roots().find((root) => root.id === selectedRootId) ?? this.roots()[0] ?? null;
   });
 
   protected readonly selectedRootName = computed(() => this.selectedRoot()?.name ?? "No folder selected");
+  protected readonly currentSpaceName = computed(() => this.spaces().find((space) => space.id === this.currentSpaceId())?.name ?? "Main");
   protected readonly selectedRootIdentifier = computed(() => this.selectedRoot()?.id ?? null);
   protected readonly selectedRootPath = computed(() => this.selectedRoot()?.path ?? "-");
   protected readonly selectedRootStatus = computed(() => this.selectedRoot()?.status ?? "ready");
@@ -238,7 +260,7 @@ export class AppComponent implements OnInit {
   protected readonly selectedRootVideoCount = computed(() => this.selectedRoot()?.videoCount ?? 0);
   protected readonly selectedRootMediaCount = computed(() => this.selectedRoot()?.mediaCount ?? 0);
   protected readonly selectedMedia = computed(() => this.mediaItems().find((item) => item.id === this.selectedMediaId()) ?? this.mediaItems()[0] ?? null);
-  protected readonly detailMediaItems = computed(() => this.activeView() === "favorites" ? this.visibleMediaItems() : this.mediaItems());
+  protected readonly detailMediaItems = computed(() => this.activeView() === "favorites" || this.activeTagFilters().length > 0 ? this.visibleMediaItems() : this.mediaItems());
   protected readonly selectedMediaMetadata = computed(() => {
     const item = this.selectedMedia();
     return item ? this.metadataById()[item.id] ?? this.emptyMetadata(item.id) : null;
@@ -276,12 +298,32 @@ export class AppComponent implements OnInit {
     return [...groups.values()].sort((first, second) => second.faces.length - first.faces.length || first.name.localeCompare(second.name));
   });
   protected readonly peopleCount = computed(() => this.personGroups().length);
-  protected readonly visibleMediaItems = computed(() => {
-    if (this.activeView() === "favorites") {
-      return this.mediaItems().filter((item) => this.metadataById()[item.id]?.favorite);
+  protected readonly knownPeopleOptions = computed(() => this.knownPeople().filter((name) => name.trim().length > 0));
+  protected readonly availableFilterTags = computed(() => {
+    const tags = new Set<string>();
+    for (const item of this.mediaItems()) {
+      for (const tag of this.metadataById()[item.id]?.tags ?? []) {
+        if (this.shouldDisplayMetadataTag(tag)) {
+          tags.add(tag);
+        }
+      }
     }
 
-    return this.mediaItems();
+    return [...tags].sort((first, second) => first.localeCompare(second));
+  });
+  protected readonly visibleMediaItems = computed(() => {
+    const base = this.activeView() === "favorites"
+      ? this.mediaItems().filter((item) => this.metadataById()[item.id]?.favorite)
+      : this.mediaItems();
+    const filters = this.activeTagFilters().map((tag) => this.normalizeTagValue(tag));
+    if (filters.length === 0) {
+      return base;
+    }
+
+    return base.filter((item) => {
+      const tags = (this.metadataById()[item.id]?.tags ?? []).map((tag) => this.normalizeTagValue(tag));
+      return filters.every((filter) => tags.includes(filter));
+    });
   });
   protected readonly activeViewTitle = computed(() => {
     switch (this.activeView()) {
@@ -356,18 +398,30 @@ export class AppComponent implements OnInit {
     if (savedThumbnailLayoutMode === "dynamic" || savedThumbnailLayoutMode === "square" || savedThumbnailLayoutMode === "full") {
       this.thumbnailLayoutMode.set(savedThumbnailLayoutMode);
     }
+    const savedTagFilters = localStorage.getItem("moments.activeTagFilters");
+    if (savedTagFilters) {
+      try {
+        const parsed = JSON.parse(savedTagFilters) as string[];
+        if (Array.isArray(parsed)) {
+          this.activeTagFilters.set(parsed.filter((tag) => typeof tag === "string" && tag.trim().length > 0));
+        }
+      } catch {
+        this.activeTagFilters.set([]);
+      }
+    }
 
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
     this.prefersDark.set(mediaQuery.matches);
     mediaQuery.addEventListener("change", (event) => this.prefersDark.set(event.matches));
 
+    await this.refreshSpaces();
     await this.refreshLibrary();
     if (this.desktopAvailable) {
-      await this.refreshSettings();
+      await Promise.all([this.refreshSettings(), this.refreshKnownPeople()]);
     } else {
       this.settingsMessage.set("Desktop features are unavailable in the browser preview.");
     }
-    const savedRootId = localStorage.getItem("moments.selectedRootId");
+    const savedRootId = localStorage.getItem(this.selectedRootStorageKey());
     const initialRoot = this.roots().find((root) => root.id === savedRootId) ?? this.roots()[0] ?? null;
     if (initialRoot) {
       this.selectedRootId.set(initialRoot.id);
@@ -379,6 +433,9 @@ export class AppComponent implements OnInit {
   protected handleDocumentClick(): void {
     this.openRootMenuId.set(null);
     this.mediaContextMenu.set(null);
+    this.spaceMenuOpen.set(false);
+    this.tagFilterMenuOpen.set(false);
+    this.hoveredFaceId.set(null);
   }
 
   @HostListener("document:keydown", ["$event"])
@@ -419,13 +476,63 @@ export class AppComponent implements OnInit {
 
     if (event.key === "Escape") {
       this.mediaContextMenu.set(null);
+      this.spaceMenuOpen.set(false);
+      this.tagFilterMenuOpen.set(false);
+      this.hoveredFaceId.set(null);
     }
   }
 
   @HostListener("window:resize")
   protected handleWindowResize(): void {
-    this.syncViewerSurfaceSize();
-    requestAnimationFrame(() => this.syncViewerSurfaceSize());
+    this.queueViewerSurfaceSync();
+  }
+
+  protected openSpaceMenu(event: MouseEvent): void {
+    if (!this.desktopAvailable) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    this.spaceMenuOpen.update((open) => !open);
+    this.tagFilterMenuOpen.set(false);
+  }
+
+  protected keepSpaceMenuOpen(event: Event): void {
+    event.stopPropagation();
+  }
+
+  protected async createSpace(): Promise<void> {
+    if (!this.requireDesktopFeature("Spaces")) {
+      return;
+    }
+
+    const name = window.prompt("Create a new space", "New Space")?.trim();
+    if (!name) {
+      return;
+    }
+
+    try {
+      const catalog = await invoke<SpaceCatalog>("create_space", { name });
+      await this.applySpaceCatalog(catalog);
+      this.analysisMessage.set(`Switched to ${name}.`);
+    } catch (error) {
+      this.errorMessage.set(this.describeError(error));
+    }
+  }
+
+  protected async switchSpace(space: AppSpace): Promise<void> {
+    if (space.id === this.currentSpaceId()) {
+      this.spaceMenuOpen.set(false);
+      return;
+    }
+
+    try {
+      const catalog = await invoke<SpaceCatalog>("select_space", { spaceId: space.id });
+      await this.applySpaceCatalog(catalog);
+    } catch (error) {
+      this.errorMessage.set(this.describeError(error));
+    }
   }
 
   protected async addFolder(): Promise<void> {
@@ -472,6 +579,7 @@ export class AppComponent implements OnInit {
     this.activeView.set(view);
     this.isDetailOpen.set(false);
     this.isSettingsOpen.set(false);
+    this.tagFilterMenuOpen.set(false);
     if (view === "duplicates") {
       this.duplicateFilterRootId.set(null);
       void this.loadDuplicateGroups();
@@ -565,6 +673,7 @@ export class AppComponent implements OnInit {
       this.lastScan.set(stats);
       await this.refreshLibrary();
       await this.loadMedia(root.id);
+      await this.refreshKnownPeople();
       if (this.activeView() === "duplicates") {
         await this.loadDuplicateGroups();
       }
@@ -580,6 +689,7 @@ export class AppComponent implements OnInit {
     this.isDetailOpen.set(false);
     this.activeView.set("library");
     this.openRootMenuId.set(null);
+    this.hoveredFaceId.set(null);
     await this.loadMedia(root.id);
   }
 
@@ -601,6 +711,7 @@ export class AppComponent implements OnInit {
     this.resetPan();
     this.revealDetailToolbar();
     this.hideDetailCarousel();
+    this.queueViewerSurfaceSync();
     this.queueCarouselSync();
   }
 
@@ -620,7 +731,9 @@ export class AppComponent implements OnInit {
     this.zoom.set(100);
     this.resetPan();
     this.tagDraft.set("");
+    this.hoveredFaceId.set(null);
     this.revealDetailToolbar();
+    this.queueViewerSurfaceSync();
     this.queueCarouselSync();
   }
 
@@ -768,6 +881,7 @@ export class AppComponent implements OnInit {
     try {
       const result = await invoke<FaceAnalysisResult>("analyze_media_faces", { mediaId: item.id });
       this.faceAnalysisById.update((analysis) => ({ ...analysis, [item.id]: result }));
+      await this.refreshKnownPeople();
     } catch (error) {
       this.errorMessage.set(this.describeError(error));
     } finally {
@@ -775,27 +889,21 @@ export class AppComponent implements OnInit {
     }
   }
 
-  protected async renameFace(face: FaceCandidate, event: Event): Promise<void> {
+  protected async renameFace(face: FaceCandidate, valueOrEvent: string | Event): Promise<void> {
     if (!this.requireDesktopFeature("Face naming")) {
       return;
     }
 
-    const input = event.target instanceof HTMLInputElement ? event.target.value : "";
+    const input = typeof valueOrEvent === "string"
+      ? valueOrEvent
+      : valueOrEvent.target instanceof HTMLInputElement || valueOrEvent.target instanceof HTMLSelectElement
+        ? valueOrEvent.target.value
+        : "";
     try {
       const updated = await invoke<FaceCandidate>("set_face_name", { faceId: face.id, name: input });
-      this.faceAnalysisById.update((analysis) => {
-        const current = analysis[updated.mediaId];
-        if (!current) {
-          return analysis;
-        }
-        return {
-          ...analysis,
-          [updated.mediaId]: {
-            ...current,
-            faces: current.faces.map((candidate) => candidate.id === updated.id ? updated : candidate),
-          },
-        };
-      });
+      this.upsertFace(updated);
+      this.hoveredFaceId.set(null);
+      await this.refreshKnownPeople();
     } catch (error) {
       this.errorMessage.set(this.describeError(error));
     }
@@ -887,6 +995,7 @@ export class AppComponent implements OnInit {
 
   protected closeInspector(): void {
     this.inspectorVisible.set(false);
+    this.queueViewerSurfaceSync();
   }
 
   protected setThemeMode(mode: ThemeMode): void {
@@ -900,6 +1009,7 @@ export class AppComponent implements OnInit {
     }
 
     this.selectedImageNaturalSize.set({ width: image.naturalWidth, height: image.naturalHeight });
+    this.queueViewerSurfaceSync();
   }
 
   protected setThumbnailSize(value: string): void {
@@ -913,9 +1023,49 @@ export class AppComponent implements OnInit {
     this.thumbnailLayoutMode.set(mode);
   }
 
+  protected toggleTagFilterMenu(event?: Event): void {
+    event?.stopPropagation();
+    this.tagFilterMenuOpen.update((open) => !open);
+    this.spaceMenuOpen.set(false);
+  }
+
+  protected toggleTagFilter(tag: string): void {
+    this.activeTagFilters.update((filters) => {
+      const exists = filters.some((candidate) => candidate.localeCompare(tag, undefined, { sensitivity: "accent" }) === 0);
+      if (exists) {
+        return filters.filter((candidate) => candidate.localeCompare(tag, undefined, { sensitivity: "accent" }) !== 0);
+      }
+      return [...filters, tag];
+    });
+  }
+
+  protected clearTagFilters(): void {
+    this.activeTagFilters.set([]);
+  }
+
+  protected hasActiveTagFilter(tag: string): boolean {
+    const normalized = this.normalizeTagValue(tag);
+    return this.activeTagFilters().some((candidate) => this.normalizeTagValue(candidate) === normalized);
+  }
+
+  protected hoverFace(face: FaceCandidate, event?: Event): void {
+    event?.stopPropagation();
+    this.hoveredFaceId.set(face.id);
+    this.revealDetailToolbar();
+  }
+
+  protected leaveFace(face: FaceCandidate, event?: Event): void {
+    event?.stopPropagation();
+    if (this.hoveredFaceId() === face.id) {
+      this.hoveredFaceId.set(null);
+    }
+  }
+
   protected openMediaContextMenu(item: MediaItem, event: MouseEvent): void {
     event.preventDefault();
     event.stopPropagation();
+    this.spaceMenuOpen.set(false);
+    this.tagFilterMenuOpen.set(false);
     this.mediaContextMenu.set({ item, x: event.clientX, y: event.clientY });
   }
 
@@ -944,10 +1094,12 @@ export class AppComponent implements OnInit {
     const shouldShow = !(this.sidebarVisible() || this.inspectorVisible());
     this.sidebarVisible.set(shouldShow);
     this.inspectorVisible.set(shouldShow);
+    this.queueViewerSurfaceSync();
   }
 
   protected toggleSidebar(): void {
     this.sidebarVisible.update((visible) => !visible);
+    this.queueViewerSurfaceSync();
   }
 
   protected isSelected(root: LibraryRoot): boolean {
@@ -1075,6 +1227,7 @@ export class AppComponent implements OnInit {
         const nextRoot = this.roots()[0] ?? null;
         this.selectedRootId.set(nextRoot?.id ?? null);
         this.mediaItems.set([]);
+        this.faceAnalysisById.set({});
         if (nextRoot) {
           await this.loadMedia(nextRoot.id);
         }
@@ -1154,6 +1307,8 @@ export class AppComponent implements OnInit {
 
   private async refreshLibrary(): Promise<void> {
     if (!this.desktopAvailable) {
+      this.spaces.set([{ id: "main", name: "Main" }]);
+      this.currentSpaceId.set("main");
       this.webSampleMedia = await this.loadWebSamples();
       const photoCount = this.webSampleMedia.filter((item) => item.mediaType === "photo").length;
       const videoCount = this.webSampleMedia.filter((item) => item.mediaType === "video").length;
@@ -1200,6 +1355,7 @@ export class AppComponent implements OnInit {
         const media = rootId === WEB_SAMPLES_ROOT_ID ? this.webSampleMedia : [];
         this.mediaItems.set(media);
         this.metadataById.set({});
+        this.faceAnalysisById.set({});
         this.selectedMediaId.set(media.find((item) => item.id === this.selectedMediaId())?.id ?? media[0]?.id ?? null);
         this.queueCarouselSync();
         return;
@@ -1207,10 +1363,15 @@ export class AppComponent implements OnInit {
 
       const media = await invoke<MediaItem[]>("get_library_media", { rootId, offset: 0, limit: 500 });
       this.mediaItems.set(media);
-      await this.loadMetadata(media.map((item) => item.id));
+      await Promise.all([
+        this.loadMetadata(media.map((item) => item.id)),
+        this.loadFaceAnalysis(media),
+        this.refreshKnownPeople(),
+      ]);
       if (!media.some((item) => item.id === this.selectedMediaId())) {
         this.selectedMediaId.set(media[0]?.id ?? null);
       }
+      this.queueViewerSurfaceSync();
       this.queueCarouselSync();
     } catch (error) {
       this.errorMessage.set(this.describeError(error));
@@ -1249,6 +1410,45 @@ export class AppComponent implements OnInit {
 
     const metadata = await invoke<MediaMetadata[]>("get_media_metadata", { mediaIds });
     this.metadataById.set(Object.fromEntries(metadata.map((entry) => [entry.mediaId, entry])));
+  }
+
+  private async loadFaceAnalysis(media: MediaItem[]): Promise<void> {
+    if (!this.desktopAvailable) {
+      this.faceAnalysisById.set({});
+      return;
+    }
+
+    const mediaIds = media.filter((item) => item.mediaType === "photo").map((item) => item.id);
+    if (mediaIds.length === 0) {
+      this.faceAnalysisById.set({});
+      return;
+    }
+
+    const faces = await invoke<FaceCandidate[]>("get_face_candidates", { mediaIds });
+    const facesByMediaId = new Map<string, FaceCandidate[]>();
+    for (const face of faces) {
+      facesByMediaId.set(face.mediaId, [...(facesByMediaId.get(face.mediaId) ?? []), face]);
+    }
+
+    this.faceAnalysisById.set(Object.fromEntries(mediaIds.map((mediaId) => {
+      const mediaFaces = facesByMediaId.get(mediaId) ?? [];
+      return [mediaId, {
+        mediaId,
+        status: "ready" as const,
+        message: this.faceAnalysisMessage(mediaFaces.length),
+        faces: mediaFaces,
+      }];
+    })));
+  }
+
+  private async refreshKnownPeople(): Promise<void> {
+    if (!this.desktopAvailable) {
+      this.knownPeople.set([]);
+      return;
+    }
+
+    const people = await invoke<string[]>("list_known_people");
+    this.knownPeople.set(people);
   }
 
   private async saveTags(mediaId: string, tags: string[]): Promise<void> {
@@ -1294,6 +1494,7 @@ export class AppComponent implements OnInit {
           }
           return next;
         });
+        await this.refreshKnownPeople();
       }
       this.settingsMessage.set("");
       this.analysisMessage.set("");
@@ -1312,6 +1513,28 @@ export class AppComponent implements OnInit {
 
   private upsertMetadata(metadata: MediaMetadata): void {
     this.metadataById.update((entries) => ({ ...entries, [metadata.mediaId]: metadata }));
+  }
+
+  private upsertFace(face: FaceCandidate): void {
+    this.faceAnalysisById.update((analysis) => {
+      const current = analysis[face.mediaId] ?? {
+        mediaId: face.mediaId,
+        status: "ready" as const,
+        message: this.faceAnalysisMessage(1),
+        faces: [],
+      };
+      const nextFaces = current.faces.some((candidate) => candidate.id === face.id)
+        ? current.faces.map((candidate) => candidate.id === face.id ? face : candidate)
+        : [...current.faces, face];
+      return {
+        ...analysis,
+        [face.mediaId]: {
+          ...current,
+          message: this.faceAnalysisMessage(nextFaces.length),
+          faces: nextFaces,
+        },
+      };
+    });
   }
 
   private emptyMetadata(mediaId: string): MediaMetadata {
@@ -1352,6 +1575,14 @@ export class AppComponent implements OnInit {
         block: "nearest",
         inline: "center",
       });
+    });
+  }
+
+  private queueViewerSurfaceSync(): void {
+    this.syncViewerSurfaceSize();
+    requestAnimationFrame(() => {
+      this.syncViewerSurfaceSize();
+      requestAnimationFrame(() => this.syncViewerSurfaceSize());
     });
   }
 
@@ -1425,6 +1656,62 @@ export class AppComponent implements OnInit {
 
   private isTextInput(target: EventTarget | null): boolean {
     return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
+  }
+
+  private faceAnalysisMessage(faceCount: number): string {
+    if (faceCount === 0) {
+      return "No detected faces yet.";
+    }
+    if (faceCount === 1) {
+      return "1 detected face.";
+    }
+    return `${faceCount} detected faces.`;
+  }
+
+  private normalizeTagValue(tag: string): string {
+    return tag.trim().toLocaleLowerCase();
+  }
+
+  private selectedRootStorageKey(spaceId = this.currentSpaceId()): string {
+    return `moments.selectedRootId.${spaceId}`;
+  }
+
+  private async refreshSpaces(): Promise<void> {
+    if (!this.desktopAvailable) {
+      this.spaces.set([{ id: "main", name: "Main" }]);
+      this.currentSpaceId.set("main");
+      return;
+    }
+
+    const catalog = await invoke<SpaceCatalog>("list_spaces");
+    this.spaces.set(catalog.spaces);
+    this.currentSpaceId.set(catalog.currentSpaceId);
+  }
+
+  private async applySpaceCatalog(catalog: SpaceCatalog): Promise<void> {
+    this.spaces.set(catalog.spaces);
+    this.currentSpaceId.set(catalog.currentSpaceId);
+    this.spaceMenuOpen.set(false);
+    this.tagFilterMenuOpen.set(false);
+    this.hoveredFaceId.set(null);
+    this.activeTagFilters.set([]);
+    this.mediaContextMenu.set(null);
+    this.selectedMediaId.set(null);
+    this.selectedImageNaturalSize.set(null);
+    this.mediaItems.set([]);
+    this.metadataById.set({});
+    this.faceAnalysisById.set({});
+    this.isDetailOpen.set(false);
+    this.isSettingsOpen.set(false);
+    this.activeView.set("library");
+    await this.refreshLibrary();
+    await Promise.all([this.refreshKnownPeople(), this.refreshSettings()]);
+    const savedRootId = localStorage.getItem(this.selectedRootStorageKey(catalog.currentSpaceId));
+    const initialRoot = this.roots().find((root) => root.id === savedRootId) ?? this.roots()[0] ?? null;
+    this.selectedRootId.set(initialRoot?.id ?? null);
+    if (initialRoot) {
+      await this.loadMedia(initialRoot.id);
+    }
   }
 
   private async loadWebSamples(): Promise<MediaItem[]> {

@@ -18,10 +18,39 @@ use crate::{
         AiModelInfo, CacheClearResult, DatabaseStats, DuplicateGroup, FaceAnalysisResult,
         FaceAnalysisStatus, FaceCandidate, FolderAnalysisResult, FolderOperationResult,
         LibraryOverview, LibraryRoot, MediaDeleteResult, MediaItem, MediaMetadata,
-        ModelDeleteResult, ModelInstallResult, ScanStats,
+        ModelDeleteResult, ModelInstallResult, ScanStats, SpaceCatalog,
     },
     services,
 };
+
+pub fn hydrate_current_space(state: &LibraryState, app: &AppHandle) -> Result<(), String> {
+    let (roots, media_items, metadata, faces) = services::load_library_snapshot(app)?;
+    state.hydrate(roots, media_items, metadata, faces)?;
+
+    if let Ok(samples_path) = services::ensure_samples_directory(app) {
+        let root = state.add_root(samples_path.to_string_lossy().to_string())?;
+        services::record_root(app, &root.id, &root.name, &root.path)?;
+        if let Ok(scan_result) = scan_root(root.id.clone(), PathBuf::from(&root.path)) {
+            let stats = state.finish_scan(scan_result)?;
+            let media = state.media(&stats.root_id, 0, usize::MAX)?;
+            let payload = media
+                .into_iter()
+                .map(|item| {
+                    (
+                        item.id,
+                        item.name,
+                        item.path,
+                        format!("{:?}", item.media_type).to_ascii_lowercase(),
+                        item.content_hash,
+                    )
+                })
+                .collect::<Vec<_>>();
+            services::record_media(app, &stats.root_id, &payload)?;
+        }
+    }
+
+    Ok(())
+}
 
 #[tauri::command]
 pub fn add_library_root(
@@ -37,6 +66,33 @@ pub fn add_library_root(
 #[tauri::command]
 pub fn list_library_roots(state: State<'_, LibraryState>) -> Result<Vec<LibraryRoot>, String> {
     state.roots()
+}
+
+#[tauri::command]
+pub fn list_spaces(app: AppHandle) -> Result<SpaceCatalog, String> {
+    services::list_spaces(&app)
+}
+
+#[tauri::command]
+pub fn create_space(
+    name: String,
+    state: State<'_, LibraryState>,
+    app: AppHandle,
+) -> Result<SpaceCatalog, String> {
+    let catalog = services::create_space(&app, &name)?;
+    hydrate_current_space(state.inner(), &app)?;
+    Ok(catalog)
+}
+
+#[tauri::command]
+pub fn select_space(
+    space_id: String,
+    state: State<'_, LibraryState>,
+    app: AppHandle,
+) -> Result<SpaceCatalog, String> {
+    let catalog = services::select_space(&app, &space_id)?;
+    hydrate_current_space(state.inner(), &app)?;
+    Ok(catalog)
 }
 
 #[tauri::command]
@@ -112,6 +168,19 @@ pub fn get_media_metadata(
     state: State<'_, LibraryState>,
 ) -> Result<Vec<MediaMetadata>, String> {
     state.metadata_for_media(media_ids)
+}
+
+#[tauri::command]
+pub fn get_face_candidates(
+    media_ids: Vec<String>,
+    state: State<'_, LibraryState>,
+) -> Result<Vec<FaceCandidate>, String> {
+    state.faces_for_media(media_ids)
+}
+
+#[tauri::command]
+pub fn list_known_people(state: State<'_, LibraryState>) -> Result<Vec<String>, String> {
+    state.known_people()
 }
 
 #[tauri::command]
@@ -223,8 +292,12 @@ pub fn set_face_name(
     face_id: String,
     name: String,
     state: State<'_, LibraryState>,
+    app: AppHandle,
 ) -> Result<FaceCandidate, String> {
-    state.set_face_name(face_id, name)
+    let updated = state.set_face_name(face_id, name)?;
+    let analysis = state.analyze_faces(updated.media_id.clone())?;
+    services::replace_faces_for_media(&app, &updated.media_id, &analysis.faces)?;
+    Ok(updated)
 }
 
 #[tauri::command]

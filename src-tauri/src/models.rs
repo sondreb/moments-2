@@ -47,6 +47,20 @@ pub struct FaceCandidate {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AppSpace {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceCatalog {
+    pub current_space_id: String,
+    pub spaces: Vec<AppSpace>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FaceAnalysisResult {
     pub media_id: String,
     pub status: FaceAnalysisStatus,

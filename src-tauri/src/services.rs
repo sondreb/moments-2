@@ -5,11 +5,13 @@ use std::{
 };
 
 use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 use crate::models::{
-    AiModelInfo, CacheClearResult, DatabaseStats, FaceCandidate, LibraryRoot, LibraryRootStatus,
-    MediaItem, MediaMetadata, MediaType, ModelDeleteResult, ModelInstallResult,
+    AiModelInfo, AppSpace, CacheClearResult, DatabaseStats, FaceCandidate, LibraryRoot,
+    LibraryRootStatus, MediaItem, MediaMetadata, MediaType, ModelDeleteResult,
+    ModelInstallResult, SpaceCatalog,
 };
 
 struct ModelDefinition {
@@ -29,6 +31,15 @@ const CLASSIFICATION_GPU_MODEL_ID: &str = "image-classification-mobilenet-gpu";
 const FACE_MODEL_URL: &str = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx";
 const CLASSIFICATION_MODEL_URL: &str = "https://github.com/onnx/models/raw/main/validated/vision/classification/mobilenet/model/mobilenetv2-12.onnx";
 const SAMPLES_DIR_NAME: &str = "Samples";
+const DEFAULT_SPACE_ID: &str = "main";
+const DEFAULT_SPACE_NAME: &str = "Main";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedSpaceCatalog {
+    current_space_id: String,
+    spaces: Vec<AppSpace>,
+}
 
 const MODEL_DEFINITIONS: &[ModelDefinition] = &[
     ModelDefinition {
@@ -162,6 +173,49 @@ pub fn clear_cache(app: &AppHandle) -> Result<CacheClearResult, String> {
 
     clear_directory(&cache_dir, &mut result)?;
     Ok(result)
+}
+
+pub fn list_spaces(app: &AppHandle) -> Result<SpaceCatalog, String> {
+    let catalog = ensure_space_catalog(app)?;
+    Ok(SpaceCatalog {
+        current_space_id: catalog.current_space_id,
+        spaces: catalog.spaces,
+    })
+}
+
+pub fn create_space(app: &AppHandle, name: &str) -> Result<SpaceCatalog, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("space name cannot be empty".to_string());
+    }
+
+    let mut catalog = ensure_space_catalog(app)?;
+    let base_id = slugify_space_name(trimmed);
+    let space_id = unique_space_id(&catalog.spaces, &base_id);
+    catalog.spaces.push(AppSpace {
+        id: space_id.clone(),
+        name: trimmed.to_string(),
+    });
+    catalog.current_space_id = space_id;
+    write_space_catalog(app, &catalog)?;
+    Ok(SpaceCatalog {
+        current_space_id: catalog.current_space_id,
+        spaces: catalog.spaces,
+    })
+}
+
+pub fn select_space(app: &AppHandle, space_id: &str) -> Result<SpaceCatalog, String> {
+    let mut catalog = ensure_space_catalog(app)?;
+    if !catalog.spaces.iter().any(|space| space.id == space_id) {
+        return Err(format!("space '{space_id}' was not found"));
+    }
+
+    catalog.current_space_id = space_id.to_string();
+    write_space_catalog(app, &catalog)?;
+    Ok(SpaceCatalog {
+        current_space_id: catalog.current_space_id,
+        spaces: catalog.spaces,
+    })
 }
 
 pub fn database_stats(app: &AppHandle) -> Result<DatabaseStats, String> {
@@ -432,6 +486,96 @@ fn open_database(app: &AppHandle) -> Result<Connection, String> {
         Connection::open(&db_path).map_err(|error| format!("failed to open database: {error}"))?;
     initialize_database(&connection)?;
     Ok(connection)
+}
+
+fn ensure_space_catalog(app: &AppHandle) -> Result<PersistedSpaceCatalog, String> {
+    let path = space_catalog_path(app)?;
+    if !path.exists() {
+        let catalog = default_space_catalog();
+        write_space_catalog(app, &catalog)?;
+        return Ok(catalog);
+    }
+
+    let contents = fs::read_to_string(&path)
+        .map_err(|error| format!("failed to read spaces catalog: {error}"))?;
+    let mut catalog: PersistedSpaceCatalog = serde_json::from_str(&contents)
+        .map_err(|error| format!("failed to parse spaces catalog: {error}"))?;
+
+    if catalog.spaces.is_empty() {
+        catalog = default_space_catalog();
+        write_space_catalog(app, &catalog)?;
+        return Ok(catalog);
+    }
+
+    if !catalog
+        .spaces
+        .iter()
+        .any(|space| space.id == catalog.current_space_id)
+    {
+        catalog.current_space_id = catalog.spaces[0].id.clone();
+        write_space_catalog(app, &catalog)?;
+    }
+
+    Ok(catalog)
+}
+
+fn write_space_catalog(app: &AppHandle, catalog: &PersistedSpaceCatalog) -> Result<(), String> {
+    let path = space_catalog_path(app)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create spaces directory: {error}"))?;
+    }
+
+    let contents = serde_json::to_string_pretty(catalog)
+        .map_err(|error| format!("failed to serialize spaces catalog: {error}"))?;
+    fs::write(&path, contents).map_err(|error| format!("failed to write spaces catalog: {error}"))
+}
+
+fn default_space_catalog() -> PersistedSpaceCatalog {
+    PersistedSpaceCatalog {
+        current_space_id: DEFAULT_SPACE_ID.to_string(),
+        spaces: vec![AppSpace {
+            id: DEFAULT_SPACE_ID.to_string(),
+            name: DEFAULT_SPACE_NAME.to_string(),
+        }],
+    }
+}
+
+fn slugify_space_name(name: &str) -> String {
+    let mut slug = String::new();
+    let mut last_was_separator = false;
+
+    for character in name.chars().flat_map(|character| character.to_lowercase()) {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character);
+            last_was_separator = false;
+        } else if !last_was_separator {
+            slug.push('-');
+            last_was_separator = true;
+        }
+    }
+
+    let slug = slug.trim_matches('-').to_string();
+    if slug.is_empty() {
+        "space".to_string()
+    } else {
+        slug
+    }
+}
+
+fn unique_space_id(spaces: &[AppSpace], base_id: &str) -> String {
+    if !spaces.iter().any(|space| space.id == base_id) {
+        return base_id.to_string();
+    }
+
+    let mut index = 2;
+    loop {
+        let candidate = format!("{base_id}-{index}");
+        if !spaces.iter().any(|space| space.id == candidate) {
+            return candidate;
+        }
+        index += 1;
+    }
 }
 
 fn initialize_database(connection: &Connection) -> Result<(), String> {
@@ -724,11 +868,24 @@ fn clear_directory(path: &Path, result: &mut CacheClearResult) -> Result<(), Str
 }
 
 fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(app_data_dir(app)?.join("moments.sqlite3"))
+    Ok(space_directory(app)?.join("moments.sqlite3"))
 }
 
 fn samples_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app_data_dir(app)?.join(SAMPLES_DIR_NAME))
+}
+
+fn space_directory(app: &AppHandle) -> Result<PathBuf, String> {
+    let catalog = ensure_space_catalog(app)?;
+    Ok(spaces_root_dir(app)?.join(catalog.current_space_id))
+}
+
+fn spaces_root_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app_data_dir(app)?.join("spaces"))
+}
+
+fn space_catalog_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(spaces_root_dir(app)?.join("catalog.json"))
 }
 
 fn samples_source_dir(app: &AppHandle) -> Result<Option<PathBuf>, String> {

@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     fs,
     io::Read,
     path::{Path, PathBuf},
@@ -295,6 +295,38 @@ impl LibraryState {
                     })
             })
             .collect())
+    }
+
+    pub fn faces_for_media(&self, media_ids: Vec<String>) -> Result<Vec<FaceCandidate>, String> {
+        let media_ids = media_ids.into_iter().collect::<HashSet<_>>();
+        let faces = self
+            .faces
+            .lock()
+            .map_err(|_| "face metadata state is unavailable")?;
+
+        Ok(faces
+            .iter()
+            .filter(|face| media_ids.contains(&face.media_id))
+            .cloned()
+            .collect())
+    }
+
+    pub fn known_people(&self) -> Result<Vec<String>, String> {
+        let faces = self
+            .faces
+            .lock()
+            .map_err(|_| "face metadata state is unavailable")?;
+        let mut names = faces
+            .iter()
+            .filter_map(|face| face.name.as_ref())
+            .map(|name| name.trim())
+            .filter(|name| !name.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+
+        names.sort_by_key(|name| name.to_ascii_lowercase());
+        names.dedup_by(|first, second| first.eq_ignore_ascii_case(second));
+        Ok(names)
     }
 
     pub fn set_favorite(&self, media_id: String, favorite: bool) -> Result<MediaMetadata, String> {
