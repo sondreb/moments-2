@@ -94,7 +94,7 @@
       <p>{{ message }}</p>
       <button class="banner-dismiss" type="button" aria-label="Dismiss message" (click)="dismissErrorMessage()">×</button>
     </div>
-    <div class="banner analysis-banner" *ngIf="analysisMessage() as message" role="status" aria-live="polite">
+    <div class="banner analysis-banner" *ngIf="!isAnalyzingFolder() && analysisMessage() as message" role="status" aria-live="polite">
       <p>{{ message }}</p>
       <button class="banner-dismiss" type="button" aria-label="Dismiss message" (click)="dismissAnalysisMessage()">×</button>
     </div>
@@ -135,10 +135,6 @@
         </div>
 
         <div class="gallery-loading" *ngIf="isLoadingMedia()">Loading media...</div>
-        <div class="scan-overlay" *ngIf="isAnalyzingFolder()">
-          <span class="spinner" aria-hidden="true"></span>
-          <strong>{{ isScanningFaces() ? "Scanning faces" : "Scanning features" }}</strong>
-        </div>
 
       <section class="viewer detail-view" *ngIf="isDetailOpen() && selectedMedia() as item">
         <div class="viewer-toolbar" [class.visible]="detailToolbarVisible()" (pointerenter)="holdDetailToolbar()" (pointerleave)="scheduleDetailToolbarHide()" (focusin)="holdDetailToolbar()" (focusout)="scheduleDetailToolbarHide()">
@@ -158,65 +154,41 @@
           </div>
         </div>
 
-        <div class="viewer-surface" [class.video-surface]="item.mediaType === 'video'" [class.zoomed]="item.mediaType === 'photo' && zoom() > 100" [class.panning]="isPanning()" (wheel)="handleViewerWheel($event)" (pointerdown)="startPan($event)" (pointermove)="movePan($event); handleDetailPointerMove($event)" (pointerup)="endPan($event)" (pointercancel)="endPan($event)" (pointerleave)="endPan($event); hideDetailOverlays()" (contextmenu)="openMediaContextMenu(item, $event)">
+        <div #viewerSurface class="viewer-surface" [class.video-surface]="item.mediaType === 'video'" [class.zoomed]="item.mediaType === 'photo' && zoom() > 100" [class.panning]="isPanning()" (wheel)="handleViewerWheel($event)" (pointerdown)="startPan($event)" (pointermove)="movePan($event); handleDetailPointerMove($event)" (pointerup)="endPan($event)" (pointercancel)="endPan($event)" (pointerleave)="endPan($event); hideDetailOverlays()" (contextmenu)="openMediaContextMenu(item, $event)">
           <div class="face-frame" *ngIf="item.mediaType === 'photo'" [ngStyle]="viewerFrameStyle()">
             <img
               [src]="mediaUrl(item)"
               [alt]="item.name"
               title="Selected photo"
               draggable="false"
+              (load)="handleSelectedImageLoad($event)"
               [ngStyle]="selectedImageStyle()"
             />
             <span class="face-box" *ngFor="let face of selectedFaceAnalysis()?.faces" [ngStyle]="faceBoxStyle(face)" [title]="(face.name || 'Face') + ' · ' + (face.confidence | percent)"></span>
           </div>
           <video *ngIf="item.mediaType === 'video'" [src]="mediaUrl(item)" controls autoplay></video>
+          <nav class="viewer-carousel" aria-label="Other photos" *ngIf="detailMediaItems().length > 1" [class.visible]="detailCarouselVisible()" (pointerenter)="holdDetailCarousel()" (pointerleave)="scheduleDetailCarouselHide()" (focusin)="holdDetailCarousel()" (focusout)="scheduleDetailCarouselHide()">
+            <button class="carousel-step" type="button" title="Previous photo" [disabled]="selectedMediaIndex() <= 0" (click)="previousMedia()">‹</button>
+            <div class="carousel-track" role="list">
+              <button
+                class="carousel-item"
+                type="button"
+                role="listitem"
+                *ngFor="let carouselItem of detailMediaItems()"
+                [id]="carouselItemId(carouselItem)"
+                [class.active]="isSelectedMedia(carouselItem)"
+                [title]="carouselItem.name"
+                [attr.aria-label]="carouselItem.name"
+                (click)="selectMedia(carouselItem)"
+              >
+                <img *ngIf="carouselItem.mediaType === 'photo'" [src]="mediaUrl(carouselItem)" [alt]="carouselItem.name" title="Carousel photo" loading="lazy" />
+                <video *ngIf="carouselItem.mediaType === 'video'" [src]="mediaUrl(carouselItem)" muted preload="metadata"></video>
+              </button>
+            </div>
+            <button class="carousel-step" type="button" title="Next photo" [disabled]="selectedMediaIndex() >= detailMediaItems().length - 1" (click)="nextMedia()">›</button>
+          </nav>
         </div>
 
-        <nav class="viewer-carousel" aria-label="Other photos" *ngIf="detailMediaItems().length > 1" [class.visible]="detailCarouselVisible()" (pointerenter)="holdDetailCarousel()" (pointerleave)="scheduleDetailCarouselHide()" (focusin)="holdDetailCarousel()" (focusout)="scheduleDetailCarouselHide()">
-          <button class="carousel-step" type="button" title="Previous photo" [disabled]="selectedMediaIndex() <= 0" (click)="previousMedia()">‹</button>
-          <div class="carousel-track" role="list">
-            <button
-              class="carousel-item"
-              type="button"
-              role="listitem"
-              *ngFor="let carouselItem of detailMediaItems()"
-              [id]="carouselItemId(carouselItem)"
-              [class.active]="isSelectedMedia(carouselItem)"
-              [title]="carouselItem.name"
-              [attr.aria-label]="carouselItem.name"
-              (click)="selectMedia(carouselItem)"
-            >
-              <img *ngIf="carouselItem.mediaType === 'photo'" [src]="mediaUrl(carouselItem)" [alt]="carouselItem.name" title="Carousel photo" loading="lazy" />
-              <video *ngIf="carouselItem.mediaType === 'video'" [src]="mediaUrl(carouselItem)" muted preload="metadata"></video>
-            </button>
-          </div>
-          <button class="carousel-step" type="button" title="Next photo" [disabled]="selectedMediaIndex() >= detailMediaItems().length - 1" (click)="nextMedia()">›</button>
-        </nav>
-
-        <aside class="detail-metadata">
-          <section>
-            <p class="eyebrow">Tags</p>
-            <div class="tag-list" *ngIf="selectedMediaMetadata() as metadata">
-              <button class="tag-chip" type="button" *ngFor="let tag of metadata.tags" (click)="removeTag(tag)">{{ tag }} ×</button>
-            </div>
-            <div class="tag-entry">
-              <input type="text" placeholder="Add classification tag" [value]="tagDraft()" (input)="tagDraft.set($any($event.target).value)" (keydown.enter)="addTag()" />
-              <button class="ghost-action" type="button" (click)="addTag()">Add</button>
-            </div>
-          </section>
-
-          <section>
-            <p class="eyebrow">People</p>
-            <button class="ghost-action" type="button" [disabled]="item.mediaType !== 'photo' || isAnalyzingFaces()" (click)="analyzeFaces()"><span class="spinner" *ngIf="isAnalyzingFaces()" aria-hidden="true"></span>{{ isAnalyzingFaces() ? "Analyzing" : "Analyze faces" }}</button>
-            <p class="metadata-note" *ngIf="selectedFaceAnalysis() as analysis">{{ analysis.message }}</p>
-            <div class="face-list" *ngIf="selectedFaceAnalysis()?.faces?.length">
-              <label class="face-row" *ngFor="let face of selectedFaceAnalysis()?.faces">
-                <span>Face {{ face.confidence | percent }}</span>
-                <input type="text" [value]="face.name || ''" placeholder="Name person" (change)="renameFace(face, $event)" />
-              </label>
-            </div>
-          </section>
-        </aside>
       </section>
 
         <section class="people-view" *ngIf="!isDetailOpen() && activeView() === 'people'">
@@ -318,7 +290,7 @@
       </div>
       <div *ngIf="selectedMediaMetadata() as metadata">
         <dt>Tags</dt>
-        <dd>{{ metadata.tags.length ? metadata.tags.join(", ") : "-" }}</dd>
+        <dd>{{ selectedVisibleTags().length ? selectedVisibleTags().join(", ") : "-" }}</dd>
       </div>
       <div>
         <dt>Path</dt>
@@ -341,5 +313,33 @@
         <dd>{{ selectedRootVideoCount() | number }}</dd>
       </div>
     </dl>
+
+    <div class="inspector-panels" *ngIf="selectedMedia() as item">
+      <section class="inspector-panel">
+        <p class="eyebrow">Tags</p>
+        <div class="tag-list" *ngIf="selectedVisibleTags().length; else emptyInspectorTags">
+          <button class="tag-chip" type="button" *ngFor="let tag of selectedVisibleTags()" (click)="removeTag(tag)">{{ tag }} ×</button>
+        </div>
+        <ng-template #emptyInspectorTags>
+          <p class="metadata-note">{{ selectedHiddenAutoTagCount() > 0 ? "Legacy autogenerated tags are hidden. Run Scan features again to refresh readable labels." : "No visible tags yet." }}</p>
+        </ng-template>
+        <div class="tag-entry">
+          <input type="text" placeholder="Add classification tag" [value]="tagDraft()" (input)="tagDraft.set($any($event.target).value)" (keydown.enter)="addTag()" />
+          <button class="ghost-action" type="button" (click)="addTag()">Add</button>
+        </div>
+      </section>
+
+      <section class="inspector-panel">
+        <p class="eyebrow">People</p>
+        <button class="ghost-action" type="button" [disabled]="item.mediaType !== 'photo' || isAnalyzingFaces()" (click)="analyzeFaces()"><span class="spinner" *ngIf="isAnalyzingFaces()" aria-hidden="true"></span>{{ isAnalyzingFaces() ? "Analyzing" : "Analyze faces" }}</button>
+        <p class="metadata-note" *ngIf="selectedFaceAnalysis() as analysis">{{ analysis.message }}</p>
+        <div class="face-list" *ngIf="selectedFaceAnalysis()?.faces?.length">
+          <label class="face-row" *ngFor="let face of selectedFaceAnalysis()?.faces">
+            <span>Face {{ face.confidence | percent }}</span>
+            <input type="text" [value]="face.name || ''" placeholder="Name person" (change)="renameFace(face, $event)" />
+          </label>
+        </div>
+      </section>
+    </div>
   </aside>
 </main>

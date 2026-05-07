@@ -643,23 +643,6 @@ dd {
   font-weight: 700;
 }
 
-.scan-overlay {
-  position: sticky;
-  z-index: 3;
-  top: 0;
-  min-height: 42px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
-  padding: 9px 12px;
-  border: 1px solid rgba(33, 133, 255, 0.28);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--panel-strong) 88%, var(--accent));
-  color: var(--text);
-  box-shadow: var(--shadow);
-}
-
 .viewer {
   overflow: hidden;
   margin-bottom: 10px;
@@ -676,7 +659,7 @@ dd {
   height: 100%;
   min-height: 0;
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto auto;
+  grid-template-rows: minmax(0, 1fr);
   margin-bottom: 0;
   border: 0;
   border-radius: 0;
@@ -783,6 +766,7 @@ dd {
 
 .detail-view .viewer-surface {
   grid-row: 1;
+  position: relative;
   min-height: 0;
   height: 100%;
 }
@@ -800,11 +784,12 @@ dd {
 
 .face-frame {
   position: relative;
-  width: 100%;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  flex: 0 0 auto;
+  width: fit-content;
+  height: fit-content;
+  max-width: 100%;
+  max-height: 100%;
+  line-height: 0;
   overflow: hidden;
   transform-origin: center center;
   transition: transform 0.08s ease-out;
@@ -816,6 +801,7 @@ dd {
 }
 
 .face-frame img {
+  display: block;
   width: auto;
   height: auto;
   max-width: 100%;
@@ -860,66 +846,68 @@ dd {
   color: #ff2f68;
 }
 
-.detail-metadata {
-  grid-row: 3;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
-  gap: 16px;
-  padding: 12px;
-  border-top: 1px solid var(--line);
-  background: var(--panel-strong);
-}
-
 .viewer-carousel {
-  grid-row: 2;
+  position: absolute;
+  z-index: 2;
+  left: 18px;
+  right: 18px;
+  bottom: 18px;
   min-height: 0;
   max-height: 0;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
-  background: linear-gradient(180deg, rgba(18, 22, 28, 0.94), rgba(12, 16, 21, 0.98));
+  background: linear-gradient(180deg, rgba(26, 31, 38, 0.54), rgba(12, 16, 21, 0.78));
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 18px;
+  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.24);
+  -webkit-backdrop-filter: blur(20px) saturate(1.18);
+  backdrop-filter: blur(20px) saturate(1.18);
   overflow: hidden;
   opacity: 0;
   transform: translateY(16px);
   pointer-events: none;
   padding-top: 0;
   padding-bottom: 0;
-  border-top-color: transparent;
-  transition: opacity .18s ease, transform .22s ease, max-height .22s ease, padding .22s ease, border-top-color .22s ease;
+  transition: opacity .18s ease, transform .22s ease, max-height .22s ease, padding .22s ease, border-color .22s ease;
 }
 
 .viewer-carousel.visible {
-  min-height: 88px;
-  max-height: calc(clamp(52px, calc(var(--thumb-size, 136px) * 0.7), 104px) + 28px);
-  padding-top: 10px;
-  padding-bottom: 10px;
-  border-top-color: rgba(255, 255, 255, 0.08);
+  min-height: 78px;
+  max-height: calc(clamp(44px, calc(var(--thumb-size, 136px) * 0.56), 86px) + 24px);
+  padding-top: 8px;
+  padding-bottom: 8px;
+  border-color: rgba(255, 255, 255, 0.08);
   opacity: 1;
   transform: translateY(0);
   pointer-events: auto;
 }
 
+.viewer-carousel:not(.visible) {
+  border-color: transparent;
+}
+
 .carousel-track {
   min-width: 0;
   display: flex;
-  gap: 8px;
+  gap: 6px;
   overflow-x: auto;
-  padding-bottom: 4px;
+  padding-bottom: 2px;
   scroll-snap-type: x proximity;
 }
 
 .carousel-item {
   flex: 0 0 auto;
-  width: clamp(52px, calc(var(--thumb-size, 136px) * 0.7), 104px);
-  height: clamp(52px, calc(var(--thumb-size, 136px) * 0.7), 104px);
+  width: clamp(44px, calc(var(--thumb-size, 136px) * 0.56), 86px);
+  height: clamp(44px, calc(var(--thumb-size, 136px) * 0.56), 86px);
   padding: 0;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(255, 255, 255, 0.05);
   scroll-snap-align: center;
 }
 
@@ -937,12 +925,12 @@ dd {
 }
 
 .carousel-step {
-  width: 36px;
-  height: 36px;
+  width: 30px;
+  height: 30px;
   padding: 0;
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.08);
   color: #fff;
 }
 
@@ -977,7 +965,15 @@ dd {
   background: rgba(255, 255, 255, 0.08);
 }
 
-.detail-metadata section {
+.inspector-panels {
+  display: grid;
+  gap: 16px;
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.inspector-panel {
   min-width: 0;
   display: grid;
   align-content: start;
@@ -1437,7 +1433,4 @@ dd {
     display: none;
   }
 
-  .detail-metadata {
-    grid-template-columns: 1fr;
-  }
 }

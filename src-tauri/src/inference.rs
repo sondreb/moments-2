@@ -1,9 +1,10 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     collections::hash_map::DefaultHasher,
     fs,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
+    sync::OnceLock,
     time::UNIX_EPOCH,
 };
 
@@ -18,16 +19,20 @@ const FACE_CONFIDENCE_THRESHOLD: f32 = 0.82;
 const FACE_NMS_IOU_THRESHOLD: f32 = 0.35;
 const CLASSIFICATION_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
 const CLASSIFICATION_STD: [f32; 3] = [0.229, 0.224, 0.225];
+const CLASSIFICATION_MIN_PROBABILITY: f32 = 0.08;
+const CLASSIFICATION_TAG_LIMIT: usize = 4;
+const IMAGENET_CLASSES: &str = include_str!("imagenet_classes.txt");
 
 pub fn classify_image(
     model_path: &Path,
     image_path: &Path,
     cache_dir: &Path,
 ) -> Result<Vec<String>, String> {
-    let input_image = load_or_create_inference_image(
+    let source = load_rgb_image(image_path)?;
+    let input_image = load_or_create_classification_image(
         image_path,
+        &source,
         cache_dir,
-        "classification",
         CLASSIFICATION_SIZE,
     )?;
     let input = classification_tensor(&input_image.image)?;
@@ -39,21 +44,17 @@ pub fn classify_image(
         .try_extract_tensor::<f32>()
         .map_err(|error| format!("image classification output was not a float tensor: {error}"))?;
 
-    let mut ranked = scores
+    let probabilities = softmax_probabilities(scores);
+    let mut ranked = probabilities
         .iter()
         .enumerate()
         .map(|(index, score)| (index, *score))
         .collect::<Vec<_>>();
     ranked.sort_by(|first, second| second.1.total_cmp(&first.1));
 
-    let mut tags = image_descriptor_tags(&input_image.image);
-    tags.push("onnx-classified".to_string());
-    tags.extend(
-        ranked.into_iter().take(3).map(|(index, score)| {
-            format!("imagenet-{index}-{:.0}%", soft_confidence(score) * 100.0)
-        }),
-    );
-    Ok(tags)
+    let mut tags = image_descriptor_tags(&source);
+    tags.extend(classification_label_tags(&ranked));
+    Ok(deduplicate_tags(tags))
 }
 
 pub fn detect_faces(
@@ -150,30 +151,22 @@ fn load_rgb_image(path: &Path) -> Result<DynamicImage, String> {
         .map_err(|error| format!("failed to decode image '{}': {error}", path.display()))
 }
 
-fn load_or_create_inference_image(
+fn load_or_create_classification_image(
     source_path: &Path,
+    source: &DynamicImage,
     cache_dir: &Path,
-    bucket: &str,
     size: u32,
 ) -> Result<InferenceImage, String> {
-    let cached_path = inference_image_path(source_path, cache_dir, bucket, size)?;
+    let cached_path = inference_image_path(source_path, cache_dir, "classification-v2", size)?;
     if cached_path.exists() {
-        let image = load_rgb_image(&cached_path)?;
-        let source_dimensions = image::image_dimensions(source_path).map_err(|error| {
-            format!(
-                "failed to inspect image dimensions '{}': {error}",
-                source_path.display()
-            )
-        })?;
         return Ok(InferenceImage {
-            image,
-            geometry: SquareGeometry::from_source(source_dimensions.0, source_dimensions.1, size),
+            image: load_rgb_image(&cached_path)?,
+            geometry: SquareGeometry::from_source(source.width(), source.height(), size),
         });
     }
 
-    let source = load_rgb_image(source_path)?;
     let geometry = SquareGeometry::from_source(source.width(), source.height(), size);
-    let thumbnail = square_thumbnail(&source, size);
+    let thumbnail = classification_thumbnail(source, size);
     if let Some(parent) = cached_path.parent() {
         fs::create_dir_all(parent)
             .map_err(|error| format!("failed to create inference cache: {error}"))?;
@@ -184,6 +177,7 @@ fn load_or_create_inference_image(
             cached_path.display()
         )
     })?;
+
     Ok(InferenceImage {
         image: DynamicImage::ImageRgb8(thumbnail),
         geometry,
@@ -238,6 +232,12 @@ fn square_thumbnail(image: &DynamicImage, size: u32) -> RgbImage {
     let y = (size.saturating_sub(resized.height())) / 2;
     imageops::replace(&mut canvas, &resized, x.into(), y.into());
     canvas
+}
+
+fn classification_thumbnail(image: &DynamicImage, size: u32) -> RgbImage {
+    image
+        .resize_to_fill(size, size, FilterType::Triangle)
+        .to_rgb8()
 }
 
 fn classification_tensor(image: &DynamicImage) -> Result<Tensor<f32>, String> {
@@ -605,38 +605,148 @@ impl FaceDetection {
 
 fn image_descriptor_tags(image: &DynamicImage) -> Vec<String> {
     let (width, height) = image.dimensions();
-    let mut tags = vec!["photo".to_string()];
-    tags.push(
+    vec![
         if width >= height {
             "landscape"
         } else {
             "portrait"
         }
         .to_string(),
-    );
+    ]
+}
 
-    let rgb = image.thumbnail(64, 64).to_rgb8();
-    let luminance = rgb
-        .pixels()
-        .map(|pixel| 0.2126 * pixel[0] as f32 + 0.7152 * pixel[1] as f32 + 0.0722 * pixel[2] as f32)
-        .sum::<f32>()
-        / rgb.pixels().len().max(1) as f32;
+fn softmax_probabilities(scores: &[f32]) -> Vec<f32> {
+    let max_score = scores
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite())
+        .max_by(|first, second| first.total_cmp(second))
+        .unwrap_or(0.0);
+    let exps = scores
+        .iter()
+        .map(|score| if score.is_finite() { (score - max_score).exp() } else { 0.0 })
+        .collect::<Vec<_>>();
+    let total = exps.iter().sum::<f32>();
+    if total <= f32::EPSILON {
+        return vec![0.0; scores.len()];
+    }
 
-    tags.push(
-        if luminance >= 150.0 {
-            "bright"
-        } else {
-            "low-light"
+    exps.into_iter().map(|value| value / total).collect()
+}
+
+fn imagenet_classes() -> &'static Vec<&'static str> {
+    static CLASSES: OnceLock<Vec<&'static str>> = OnceLock::new();
+    CLASSES.get_or_init(|| {
+        IMAGENET_CLASSES
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect()
+    })
+}
+
+fn classification_label_tags(ranked: &[(usize, f32)]) -> Vec<String> {
+    let classes = imagenet_classes();
+    let mut tags = Vec::new();
+    let mut seen = HashSet::new();
+
+    for (index, probability) in ranked.iter().copied().take(8) {
+        if probability < CLASSIFICATION_MIN_PROBABILITY {
+            continue;
         }
-        .to_string(),
-    );
+
+        let Some(label) = classes.get(index) else {
+            continue;
+        };
+        for tag in normalized_classification_tags(label) {
+            if seen.insert(tag.clone()) {
+                tags.push(tag);
+                if tags.len() >= CLASSIFICATION_TAG_LIMIT {
+                    return tags;
+                }
+            }
+        }
+    }
+
+    if tags.is_empty() {
+        if let Some((index, _)) = ranked.first() {
+            if let Some(label) = classes.get(*index) {
+                return normalized_classification_tags(label);
+            }
+        }
+    }
+
     tags
 }
 
-fn soft_confidence(score: f32) -> f32 {
-    if score.is_finite() {
-        (1.0 / (1.0 + (-score).exp())).clamp(0.0, 1.0)
-    } else {
-        0.0
+fn normalized_classification_tags(label: &str) -> Vec<String> {
+    let normalized = label.trim().to_lowercase();
+    if normalized.is_empty() {
+        return Vec::new();
     }
+
+    let mut tags = Vec::new();
+    if let Some(generic) = generic_label_tag(&normalized) {
+        tags.push(generic.to_string());
+    }
+
+    let specific = normalize_tag(&normalized);
+    if !specific.is_empty() && !tags.iter().any(|tag| tag == &specific) {
+        tags.push(specific);
+    }
+
+    tags
+}
+
+fn generic_label_tag(label: &str) -> Option<&'static str> {
+    const DOG_TERMS: &[&str] = &[
+        "dog", "hound", "terrier", "retriever", "shepherd", "spaniel", "poodle",
+        "pinscher", "chihuahua", "mastiff", "husky", "malamute", "beagle", "corgi",
+        "dalmatian", "boxer", "doberman", "pug", "rottweiler", "schnauzer",
+    ];
+    const CAT_TERMS: &[&str] = &[
+        "cat", "kitten", "tabby", "siamese", "persian", "egyptian", "lynx", "cougar",
+        "leopard", "jaguar", "lion", "tiger", "cheetah",
+    ];
+    const PERSON_TERMS: &[&str] = &["groom", "ballplayer", "scuba diver"];
+
+    if DOG_TERMS.iter().any(|term| label.contains(term)) {
+        return Some("dog");
+    }
+    if CAT_TERMS.iter().any(|term| label.contains(term)) {
+        return Some("cat");
+    }
+    if PERSON_TERMS.iter().any(|term| label.contains(term)) {
+        return Some("person");
+    }
+
+    None
+}
+
+fn normalize_tag(value: &str) -> String {
+    let mut normalized = String::new();
+    let mut previous_dash = false;
+
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            normalized.push(character.to_ascii_lowercase());
+            previous_dash = false;
+        } else if !previous_dash {
+            normalized.push('-');
+            previous_dash = true;
+        }
+    }
+
+    normalized.trim_matches('-').to_string()
+}
+
+fn deduplicate_tags(tags: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::new();
+    for tag in tags {
+        if seen.insert(tag.clone()) {
+            deduped.push(tag);
+        }
+    }
+    deduped
 }

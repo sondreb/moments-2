@@ -1,5 +1,5 @@
 import { CommonModule } from "@angular/common";
-import { Component, HostListener, OnInit, computed, effect, signal } from "@angular/core";
+import { Component, ElementRef, HostListener, OnInit, computed, effect, signal, viewChild } from "@angular/core";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { AiModelInfo, DatabaseStats, SettingsComponent } from "./settings.component";
@@ -119,6 +119,11 @@ interface PersonGroup {
   confidence: number;
 }
 
+interface Size {
+  width: number;
+  height: number;
+}
+
 interface MediaContextMenuState {
   item: MediaItem;
   x: number;
@@ -133,7 +138,7 @@ interface MediaContextMenuState {
 })
 export class AppComponent implements OnInit {
   private static readonly VIEWER_CHROME_IDLE_MS = 1800;
-  private static readonly VIEWER_TOP_ZONE_PX = 140;
+  private static readonly VIEWER_TOP_ZONE_PX = 180;
   private static readonly VIEWER_BOTTOM_ZONE_PX = 180;
 
   protected readonly desktopAvailable = this.isDesktopRuntime();
@@ -166,6 +171,8 @@ export class AppComponent implements OnInit {
   protected readonly panX = signal(0);
   protected readonly panY = signal(0);
   protected readonly isPanning = signal(false);
+  protected readonly viewerSurfaceSize = signal<Size | null>(null);
+  protected readonly selectedImageNaturalSize = signal<Size | null>(null);
   protected readonly detailToolbarVisible = signal(false);
   protected readonly detailCarouselVisible = signal(false);
   protected readonly thumbnailSize = signal(136);
@@ -180,6 +187,7 @@ export class AppComponent implements OnInit {
   protected readonly duplicateFilterRootId = signal<string | null>(null);
   protected readonly duplicateDeleteSelection = signal<Set<string>>(new Set());
   protected readonly mediaContextMenu = signal<MediaContextMenuState | null>(null);
+  private readonly viewerSurfaceRef = viewChild<ElementRef<HTMLElement>>("viewerSurface");
   private webSampleMedia: MediaItem[] = [];
   private detailToolbarTimer: ReturnType<typeof setTimeout> | null = null;
   private detailCarouselTimer: ReturnType<typeof setTimeout> | null = null;
@@ -197,6 +205,21 @@ export class AppComponent implements OnInit {
 
   private readonly persistThumbnailSize = effect(() => {
     localStorage.setItem("moments.thumbnailSize", String(this.thumbnailSize()));
+  });
+
+  private readonly watchViewerSurface = effect((onCleanup) => {
+    const surface = this.viewerSurfaceRef()?.nativeElement;
+    if (!surface) {
+      this.viewerSurfaceSize.set(null);
+      return;
+    }
+
+    const updateSurfaceSize = () => this.viewerSurfaceSize.set({ width: surface.clientWidth, height: surface.clientHeight });
+    updateSurfaceSize();
+
+    const observer = new ResizeObserver(() => updateSurfaceSize());
+    observer.observe(surface);
+    onCleanup(() => observer.disconnect());
   });
 
   private readonly persistThumbnailLayoutMode = effect(() => {
@@ -220,6 +243,14 @@ export class AppComponent implements OnInit {
   protected readonly selectedMediaMetadata = computed(() => {
     const item = this.selectedMedia();
     return item ? this.metadataById()[item.id] ?? this.emptyMetadata(item.id) : null;
+  });
+  protected readonly selectedVisibleTags = computed(() => {
+    const tags = this.selectedMediaMetadata()?.tags ?? [];
+    return tags.filter((tag) => this.shouldDisplayMetadataTag(tag));
+  });
+  protected readonly selectedHiddenAutoTagCount = computed(() => {
+    const tags = this.selectedMediaMetadata()?.tags ?? [];
+    return tags.filter((tag) => !this.shouldDisplayMetadataTag(tag)).length;
   });
   protected readonly selectedFaceAnalysis = computed(() => {
     const item = this.selectedMedia();
@@ -276,15 +307,37 @@ export class AppComponent implements OnInit {
     return selected ? this.detailMediaItems().findIndex((item) => item.id === selected.id) : -1;
   });
   protected readonly effectiveTheme = computed(() => this.themeMode() === "auto" ? (this.prefersDark() ? "dark" : "light") : this.themeMode());
-  protected readonly viewerFrameStyle = computed(() => ({
-    transform: `translate3d(${this.panX()}px, ${this.panY()}px, 0) scale(${this.zoom() / 100})`,
-  }));
-  protected readonly selectedImageStyle = computed(() => ({
-    width: "auto",
-    height: "auto",
-    maxWidth: "100%",
-    maxHeight: "100%",
-  }));
+  protected readonly renderedImageSize = computed<Size | null>(() => {
+    const surface = this.viewerSurfaceSize();
+    const natural = this.selectedImageNaturalSize();
+    const item = this.selectedMedia();
+    if (!surface || !natural || !item || item.mediaType !== "photo" || natural.width <= 0 || natural.height <= 0) {
+      return null;
+    }
+
+    const scale = Math.min(surface.width / natural.width, surface.height / natural.height);
+    return {
+      width: natural.width * scale,
+      height: natural.height * scale,
+    };
+  });
+  protected readonly viewerFrameStyle = computed(() => {
+    const size = this.renderedImageSize();
+    return {
+      transform: `translate3d(${this.panX()}px, ${this.panY()}px, 0) scale(${this.zoom() / 100})`,
+      width: size ? `${size.width}px` : "auto",
+      height: size ? `${size.height}px` : "auto",
+    };
+  });
+  protected readonly selectedImageStyle = computed(() => {
+    const size = this.renderedImageSize();
+    return {
+      width: size ? `${size.width}px` : "auto",
+      height: size ? `${size.height}px` : "auto",
+      maxWidth: "none",
+      maxHeight: "none",
+    };
+  });
   protected readonly totalMedia = computed(() => this.overview().mediaCount.toLocaleString());
   protected readonly isScanningFaces = computed(() => this.currentAnalysisTask() === "faces");
   protected readonly isScanningFeatures = computed(() => this.currentAnalysisTask() === "features");
@@ -556,6 +609,7 @@ export class AppComponent implements OnInit {
 
   protected selectMedia(item: MediaItem): void {
     this.selectedMediaId.set(item.id);
+    this.selectedImageNaturalSize.set(null);
     this.isDetailOpen.set(true);
     this.isSettingsOpen.set(false);
     this.zoom.set(100);
@@ -637,6 +691,7 @@ export class AppComponent implements OnInit {
 
   protected closeDetail(): void {
     this.isDetailOpen.set(false);
+    this.selectedImageNaturalSize.set(null);
     this.zoom.set(100);
     this.resetPan();
     this.mediaContextMenu.set(null);
@@ -833,6 +888,15 @@ export class AppComponent implements OnInit {
     this.themeMode.set(mode);
   }
 
+  protected handleSelectedImageLoad(event: Event): void {
+    const image = event.currentTarget;
+    if (!(image instanceof HTMLImageElement)) {
+      return;
+    }
+
+    this.selectedImageNaturalSize.set({ width: image.naturalWidth, height: image.naturalHeight });
+  }
+
   protected setThumbnailSize(value: string): void {
     const next = Number(value);
     if (Number.isFinite(next)) {
@@ -891,6 +955,16 @@ export class AppComponent implements OnInit {
 
   protected mediaUrl(item: MediaItem): string {
     return this.desktopAvailable && !this.isBrowserAssetPath(item.path) ? convertFileSrc(item.path) : item.path;
+  }
+
+  protected shouldDisplayMetadataTag(tag: string): boolean {
+    const normalized = tag.trim().toLowerCase();
+    return normalized.length > 0
+      && !normalized.startsWith("imagenet-")
+      && normalized !== "onnx-classified"
+      && normalized !== "photo"
+      && normalized !== "low-light"
+      && normalized !== "bright";
   }
 
   protected carouselItemId(item: MediaItem): string {
@@ -1192,11 +1266,6 @@ export class AppComponent implements OnInit {
     }
 
     this.currentAnalysisTask.set(command === "analyze_root_faces" ? "faces" : "features");
-    this.analysisMessage.set(
-      command === "analyze_root_faces"
-        ? "Scanning faces with the local model..."
-        : "Scanning image features with the local model...",
-    );
     this.isAnalyzingFolder.set(true);
     try {
       const result = await invoke<FolderAnalysisResult>(command, { rootId: root.id });
