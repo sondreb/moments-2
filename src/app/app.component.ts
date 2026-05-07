@@ -132,6 +132,10 @@ interface MediaContextMenuState {
   styleUrl: "./app.component.css",
 })
 export class AppComponent implements OnInit {
+  private static readonly VIEWER_CHROME_IDLE_MS = 1800;
+  private static readonly VIEWER_TOP_ZONE_PX = 140;
+  private static readonly VIEWER_BOTTOM_ZONE_PX = 180;
+
   protected readonly desktopAvailable = this.isDesktopRuntime();
   protected readonly roots = signal<LibraryRoot[]>([]);
   protected readonly overview = signal<LibraryOverview>({ rootCount: 0, photoCount: 0, videoCount: 0, mediaCount: 0 });
@@ -162,6 +166,8 @@ export class AppComponent implements OnInit {
   protected readonly panX = signal(0);
   protected readonly panY = signal(0);
   protected readonly isPanning = signal(false);
+  protected readonly detailToolbarVisible = signal(false);
+  protected readonly detailCarouselVisible = signal(false);
   protected readonly thumbnailSize = signal(136);
   protected readonly thumbnailLayoutMode = signal<ThumbnailLayoutMode>("dynamic");
   protected readonly themeMode = signal<ThemeMode>("auto");
@@ -175,6 +181,8 @@ export class AppComponent implements OnInit {
   protected readonly duplicateDeleteSelection = signal<Set<string>>(new Set());
   protected readonly mediaContextMenu = signal<MediaContextMenuState | null>(null);
   private webSampleMedia: MediaItem[] = [];
+  private detailToolbarTimer: ReturnType<typeof setTimeout> | null = null;
+  private detailCarouselTimer: ReturnType<typeof setTimeout> | null = null;
 
   private readonly persistTheme = effect(() => {
     localStorage.setItem("moments.theme", this.themeMode());
@@ -281,16 +289,6 @@ export class AppComponent implements OnInit {
   protected readonly isScanningFaces = computed(() => this.currentAnalysisTask() === "faces");
   protected readonly isScanningFeatures = computed(() => this.currentAnalysisTask() === "features");
   protected readonly duplicateGroupCount = computed(() => this.duplicateGroups().length);
-  protected readonly thumbnailLayoutLabel = computed(() => {
-    switch (this.thumbnailLayoutMode()) {
-      case "square":
-        return "Squares";
-      case "full":
-        return "Full";
-      default:
-        return "Dynamic";
-    }
-  });
   private panStart: { pointerId: number; x: number; y: number; panX: number; panY: number } | null = null;
 
   async ngOnInit(): Promise<void> {
@@ -543,6 +541,8 @@ export class AppComponent implements OnInit {
     this.isSettingsOpen.set(false);
     this.zoom.set(100);
     this.resetPan();
+    this.revealDetailToolbar();
+    this.hideDetailCarousel();
     this.queueCarouselSync();
   }
 
@@ -561,7 +561,54 @@ export class AppComponent implements OnInit {
     this.zoom.set(100);
     this.resetPan();
     this.tagDraft.set("");
+    this.revealDetailToolbar();
     this.queueCarouselSync();
+  }
+
+  protected handleDetailPointerMove(event: PointerEvent): void {
+    const viewerSurface = event.currentTarget;
+    if (!(viewerSurface instanceof HTMLElement)) {
+      return;
+    }
+
+    const rect = viewerSurface.getBoundingClientRect();
+    const offsetTop = event.clientY - rect.top;
+    const offsetBottom = rect.bottom - event.clientY;
+
+    if (offsetTop <= AppComponent.VIEWER_TOP_ZONE_PX) {
+      this.revealDetailToolbar();
+    }
+
+    if (offsetBottom <= AppComponent.VIEWER_BOTTOM_ZONE_PX && this.detailMediaItems().length > 1) {
+      this.revealDetailCarousel();
+    }
+  }
+
+  protected hideDetailOverlays(): void {
+    this.hideDetailToolbar();
+    this.hideDetailCarousel();
+  }
+
+  protected holdDetailToolbar(): void {
+    this.clearDetailToolbarTimer();
+    if (this.isDetailOpen()) {
+      this.detailToolbarVisible.set(true);
+    }
+  }
+
+  protected scheduleDetailToolbarHide(): void {
+    this.revealDetailToolbar(false);
+  }
+
+  protected holdDetailCarousel(): void {
+    this.clearDetailCarouselTimer();
+    if (this.isDetailOpen() && this.detailMediaItems().length > 1) {
+      this.detailCarouselVisible.set(true);
+    }
+  }
+
+  protected scheduleDetailCarouselHide(): void {
+    this.revealDetailCarousel(false);
   }
 
   protected async openNative(item: MediaItem | null = this.selectedMedia()): Promise<void> {
@@ -593,6 +640,7 @@ export class AppComponent implements OnInit {
     this.zoom.set(100);
     this.resetPan();
     this.mediaContextMenu.set(null);
+    this.hideDetailOverlays();
   }
 
   protected async toggleFavorite(item: MediaItem | null = this.selectedMedia()): Promise<void> {
@@ -711,10 +759,12 @@ export class AppComponent implements OnInit {
   }
 
   protected zoomIn(): void {
+    this.revealDetailToolbar();
     this.zoom.update((value) => Math.min(400, value + 25));
   }
 
   protected zoomOut(): void {
+    this.revealDetailToolbar();
     this.zoom.update((value) => {
       const next = Math.max(25, value - 25);
       if (next <= 100) {
@@ -725,6 +775,7 @@ export class AppComponent implements OnInit {
   }
 
   protected resetZoom(): void {
+    this.revealDetailToolbar();
     this.zoom.set(100);
     this.resetPan();
   }
@@ -856,6 +907,28 @@ export class AppComponent implements OnInit {
       top: `${face.y * 100}%`,
       width: `${face.width * 100}%`,
       height: `${face.height * 100}%`,
+    };
+  }
+
+  protected personThumbnailMedia(person: PersonGroup): MediaItem | null {
+    const face = person.faces[0];
+    if (!face) {
+      return null;
+    }
+
+    return this.mediaItems().find((item) => item.id === face.mediaId) ?? null;
+  }
+
+  protected personThumbnailImageStyle(face: FaceCandidate): Record<string, string> {
+    const scale = Math.max(1, 1 / Math.max(face.width, face.height, 0.01));
+    const centerX = face.x + face.width / 2;
+    const centerY = face.y + face.height / 2;
+
+    return {
+      left: `${50 - centerX * scale * 100}%`,
+      top: `${50 - centerY * scale * 100}%`,
+      width: `${scale * 100}%`,
+      height: `${scale * 100}%`,
     };
   }
 
@@ -1206,6 +1279,64 @@ export class AppComponent implements OnInit {
         inline: "center",
       });
     });
+  }
+
+  private revealDetailToolbar(scheduleHide = true): void {
+    if (!this.isDetailOpen()) {
+      return;
+    }
+
+    this.detailToolbarVisible.set(true);
+    this.clearDetailToolbarTimer();
+    if (!scheduleHide) {
+      return;
+    }
+
+    this.detailToolbarTimer = setTimeout(() => {
+      this.detailToolbarVisible.set(false);
+      this.detailToolbarTimer = null;
+    }, AppComponent.VIEWER_CHROME_IDLE_MS);
+  }
+
+  private hideDetailToolbar(): void {
+    this.clearDetailToolbarTimer();
+    this.detailToolbarVisible.set(false);
+  }
+
+  private clearDetailToolbarTimer(): void {
+    if (this.detailToolbarTimer !== null) {
+      clearTimeout(this.detailToolbarTimer);
+      this.detailToolbarTimer = null;
+    }
+  }
+
+  private revealDetailCarousel(scheduleHide = true): void {
+    if (!this.isDetailOpen() || this.detailMediaItems().length <= 1) {
+      return;
+    }
+
+    this.detailCarouselVisible.set(true);
+    this.clearDetailCarouselTimer();
+    if (!scheduleHide) {
+      return;
+    }
+
+    this.detailCarouselTimer = setTimeout(() => {
+      this.detailCarouselVisible.set(false);
+      this.detailCarouselTimer = null;
+    }, AppComponent.VIEWER_CHROME_IDLE_MS);
+  }
+
+  private hideDetailCarousel(): void {
+    this.clearDetailCarouselTimer();
+    this.detailCarouselVisible.set(false);
+  }
+
+  private clearDetailCarouselTimer(): void {
+    if (this.detailCarouselTimer !== null) {
+      clearTimeout(this.detailCarouselTimer);
+      this.detailCarouselTimer = null;
+    }
   }
 
   private isTextInput(target: EventTarget | null): boolean {

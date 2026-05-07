@@ -90,7 +90,7 @@
   left: 12px;
   z-index: 6;
   min-height: 40px;
-  padding: 6px 12px;
+  padding: 6px 10px;
   border: 0;
   border-radius: 12px;
   background: transparent;
@@ -108,7 +108,7 @@
 }
 
 .floating-brand {
-  padding-inline: 12px;
+  padding-inline: 10px;
   background: rgba(255, 255, 255, 0.82);
   box-shadow: var(--shadow);
   -webkit-backdrop-filter: blur(14px) saturate(1.15);
@@ -483,16 +483,20 @@ dd {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 0 10px;
+  padding: 0 9px;
   border: 1px solid var(--line);
   border-radius: 7px;
   background: var(--panel);
   color: var(--text);
 }
 
-.thumbnail-slider span,
-.thumbnail-slider strong {
+.thumbnail-size-icon {
+  width: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-size: 12px;
+  color: var(--muted);
 }
 
 .thumbnail-slider input {
@@ -698,6 +702,16 @@ dd {
   border: 0;
   background: transparent;
   color: #fff;
+  opacity: 0;
+  transform: translateY(-10px);
+  pointer-events: none;
+  transition: opacity .18s ease, transform .22s ease;
+}
+
+.detail-view .viewer-toolbar.visible {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
 }
 
 .detail-view .viewer-toolbar .icon-action,
@@ -858,8 +872,8 @@ dd {
 
 .viewer-carousel {
   grid-row: 2;
-  min-height: 88px;
-  max-height: calc(clamp(52px, calc(var(--thumb-size, 136px) * 0.7), 104px) + 28px);
+  min-height: 0;
+  max-height: 0;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 10px;
@@ -868,6 +882,24 @@ dd {
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   background: linear-gradient(180deg, rgba(18, 22, 28, 0.94), rgba(12, 16, 21, 0.98));
   overflow: hidden;
+  opacity: 0;
+  transform: translateY(16px);
+  pointer-events: none;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-top-color: transparent;
+  transition: opacity .18s ease, transform .22s ease, max-height .22s ease, padding .22s ease, border-top-color .22s ease;
+}
+
+.viewer-carousel.visible {
+  min-height: 88px;
+  max-height: calc(clamp(52px, calc(var(--thumb-size, 136px) * 0.7), 104px) + 28px);
+  padding-top: 10px;
+  padding-bottom: 10px;
+  border-top-color: rgba(255, 255, 255, 0.08);
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
 }
 
 .carousel-track {
@@ -1118,10 +1150,27 @@ dd {
   height: 46px;
   display: grid;
   place-items: center;
+  overflow: hidden;
   border-radius: 50%;
   background: var(--accent);
   color: #fff;
   font-weight: 900;
+}
+
+.person-avatar-crop {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.person-avatar-crop img {
+  position: absolute;
+  display: block;
+  max-width: none;
+  max-height: none;
 }
 
 .person-card span:last-child {
