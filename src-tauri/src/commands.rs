@@ -3,6 +3,7 @@ use std::{path::PathBuf, process::Command};
 use tauri::{AppHandle, State};
 
 use crate::{
+    inference,
     library::{scan_root, LibraryState},
     models::{
         AiModelInfo, CacheClearResult, DatabaseStats, FaceAnalysisResult, FaceAnalysisStatus,
@@ -76,19 +77,32 @@ pub fn set_media_tags(
 }
 
 #[tauri::command]
-pub fn analyze_media_faces(
+pub async fn analyze_media_faces(
     media_id: String,
     state: State<'_, LibraryState>,
     app: AppHandle,
 ) -> Result<FaceAnalysisResult, String> {
     let mut result = state.analyze_faces(media_id)?;
-    let face_model_installed = services::available_models(&app)?
-        .into_iter()
-        .any(|model| model.task == "Face scanning" && model.installed);
-
-    if face_model_installed {
+    if let Some(model) = services::installed_model(&app, "Face scanning")? {
+        let model_path = services::model_path(&app, &model)?;
+        let inference_cache_dir = services::inference_cache_dir(&app)?;
+        let media_path = state.media_path(&result.media_id)?;
+        let inference_media_id = result.media_id.clone();
+        let faces = tauri::async_runtime::spawn_blocking(move || {
+            inference::detect_faces(
+                &model_path,
+                &media_path,
+                &inference_cache_dir,
+                &inference_media_id,
+            )
+        })
+        .await
+        .map_err(|error| format!("face detection task failed: {error}"))??;
+        let faces = state.replace_faces_for_media(result.media_id.clone(), faces)?;
+        services::replace_faces_for_media(&app, &result.media_id, &faces)?;
         result.status = FaceAnalysisStatus::Ready;
-        result.message = "Face detection model is installed and ready for local inference. The detection runtime will use this model bundle.".to_string();
+        result.message = format!("ONNX face detection found {} faces.", faces.len());
+        result.faces = faces;
     }
 
     Ok(result)
@@ -115,21 +129,21 @@ pub fn delete_ai_model(model_id: String, app: AppHandle) -> Result<ModelDeleteRe
 }
 
 #[tauri::command]
-pub fn analyze_root_faces(
+pub async fn analyze_root_faces(
     root_id: String,
     state: State<'_, LibraryState>,
     app: AppHandle,
 ) -> Result<FolderAnalysisResult, String> {
-    analyze_root_with_model(root_id, "Face scanning", state, app)
+    analyze_root_with_model(root_id, "Face scanning", state, app).await
 }
 
 #[tauri::command]
-pub fn classify_root_images(
+pub async fn classify_root_images(
     root_id: String,
     state: State<'_, LibraryState>,
     app: AppHandle,
 ) -> Result<FolderAnalysisResult, String> {
-    analyze_root_with_model(root_id, "Image classification", state, app)
+    analyze_root_with_model(root_id, "Image classification", state, app).await
 }
 
 #[tauri::command]
@@ -215,7 +229,7 @@ fn normalize_for_native_open(path: PathBuf) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
-fn analyze_root_with_model(
+async fn analyze_root_with_model(
     root_id: String,
     task: &str,
     state: State<'_, LibraryState>,
@@ -235,17 +249,44 @@ fn analyze_root_with_model(
         });
     };
 
-    let (faces, metadata) = if task == "Face scanning" {
-        let faces = state.scan_faces_for_root(&root_id)?;
-        services::record_faces(&app, &faces)?;
-        (faces, Vec::new())
-    } else {
-        let metadata = state.add_feature_tags_for_root(&root_id)?;
-        for entry in &metadata {
+    let model_path = services::model_path(&app, &model)?;
+    let inference_cache_dir = services::inference_cache_dir(&app)?;
+    let photo_media = state.photo_media_for_root(&root_id)?;
+    let mut faces = Vec::new();
+    let mut metadata = Vec::new();
+
+    for item in photo_media {
+        let item_path = PathBuf::from(&item.path);
+        if task == "Face scanning" {
+            let inference_model_path = model_path.clone();
+            let inference_cache_dir = inference_cache_dir.clone();
+            let inference_media_id = item.id.clone();
+            let detected = tauri::async_runtime::spawn_blocking(move || {
+                inference::detect_faces(
+                    &inference_model_path,
+                    &item_path,
+                    &inference_cache_dir,
+                    &inference_media_id,
+                )
+            })
+            .await
+            .map_err(|error| format!("face detection task failed: {error}"))??;
+            let stored_faces = state.replace_faces_for_media(item.id.clone(), detected)?;
+            services::replace_faces_for_media(&app, &item.id, &stored_faces)?;
+            faces.extend(stored_faces);
+        } else {
+            let inference_model_path = model_path.clone();
+            let inference_cache_dir = inference_cache_dir.clone();
+            let tags = tauri::async_runtime::spawn_blocking(move || {
+                inference::classify_image(&inference_model_path, &item_path, &inference_cache_dir)
+            })
+            .await
+            .map_err(|error| format!("image classification task failed: {error}"))??;
+            let entry = state.add_tags_for_media(item.id.clone(), tags)?;
             services::record_metadata(&app, &entry.media_id, entry.favorite, &entry.tags)?;
+            metadata.push(entry);
         }
-        (Vec::new(), metadata)
-    };
+    }
 
     Ok(FolderAnalysisResult {
         root_id,
@@ -254,7 +295,7 @@ fn analyze_root_with_model(
         processed_media,
         status: FaceAnalysisStatus::Ready,
         message: format!(
-            "{task} processed {processed_media} photos in this folder. The {} model is installed for this task.",
+            "{task} processed {processed_media} photos with ONNX Runtime using the {} model.",
             model.accelerator
         ),
         faces,

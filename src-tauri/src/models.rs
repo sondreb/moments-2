@@ -38,6 +38,10 @@ pub struct FaceCandidate {
     pub media_id: String,
     pub name: Option<String>,
     pub confidence: f32,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

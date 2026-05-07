@@ -1,4 +1,5 @@
 mod commands;
+mod inference;
 mod library;
 mod models;
 mod services;

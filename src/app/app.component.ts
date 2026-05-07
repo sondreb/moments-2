@@ -47,6 +47,10 @@ interface FaceCandidate {
   mediaId: string;
   name: string | null;
   confidence: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 interface FaceAnalysisResult {
@@ -79,6 +83,14 @@ interface PersonResult {
   media: MediaItem | null;
 }
 
+interface PersonGroup {
+  key: string;
+  name: string;
+  faces: FaceCandidate[];
+  media: MediaItem[];
+  confidence: number;
+}
+
 @Component({
   selector: "app-root",
   imports: [CommonModule, SettingsComponent],
@@ -106,15 +118,20 @@ export class AppComponent implements OnInit {
   protected readonly tagDraft = signal("");
   protected readonly settingsMessage = signal("");
   protected readonly analysisMessage = signal("");
+  protected readonly currentAnalysisTask = signal<"faces" | "features" | null>(null);
   protected readonly aiModels = signal<AiModelInfo[]>([]);
   protected readonly databaseStats = signal<DatabaseStats | null>(null);
   protected readonly sidebarVisible = signal(true);
   protected readonly inspectorVisible = signal(true);
   protected readonly zoom = signal(100);
+  protected readonly panX = signal(0);
+  protected readonly panY = signal(0);
+  protected readonly isPanning = signal(false);
   protected readonly themeMode = signal<ThemeMode>("auto");
   protected readonly prefersDark = signal(false);
   protected readonly lastScan = signal<ScanStats | null>(null);
   protected readonly errorMessage = signal<string | null>(null);
+  protected readonly portraitMediaIds = signal<Set<string>>(new Set());
 
   private readonly persistTheme = effect(() => {
     localStorage.setItem("moments.theme", this.themeMode());
@@ -146,7 +163,22 @@ export class AppComponent implements OnInit {
     face,
     media: this.mediaItems().find((item) => item.id === face.mediaId) ?? null,
   }))));
-  protected readonly peopleCount = computed(() => this.people().length);
+  protected readonly personGroups = computed<PersonGroup[]>(() => {
+    const groups = new Map<string, PersonGroup>();
+    for (const person of this.people()) {
+      const key = person.face.name?.trim().toLocaleLowerCase() || person.face.id;
+      const name = person.face.name?.trim() || "Unnamed person";
+      const group = groups.get(key) ?? { key, name, faces: [], media: [], confidence: 0 };
+      group.faces.push(person.face);
+      if (person.media && !group.media.some((item) => item.id === person.media?.id)) {
+        group.media.push(person.media);
+      }
+      group.confidence = Math.max(group.confidence, person.face.confidence);
+      groups.set(key, group);
+    }
+    return [...groups.values()].sort((first, second) => second.faces.length - first.faces.length || first.name.localeCompare(second.name));
+  });
+  protected readonly peopleCount = computed(() => this.personGroups().length);
   protected readonly visibleMediaItems = computed(() => {
     if (this.activeView() === "favorites") {
       return this.mediaItems().filter((item) => this.metadataById()[item.id]?.favorite);
@@ -179,7 +211,13 @@ export class AppComponent implements OnInit {
   protected readonly zoomedImageHeight = computed(() => this.zoom() > 100 ? "auto" : "100%");
   protected readonly zoomedImageMaxWidth = computed(() => this.zoom() > 100 ? "none" : "100%");
   protected readonly zoomedImageMaxHeight = computed(() => this.zoom() > 100 ? "none" : "100%");
+  protected readonly viewerFrameStyle = computed(() => ({
+    transform: `translate3d(${this.panX()}px, ${this.panY()}px, 0)`,
+  }));
   protected readonly totalMedia = computed(() => this.overview().mediaCount.toLocaleString());
+  protected readonly isScanningFaces = computed(() => this.currentAnalysisTask() === "faces");
+  protected readonly isScanningFeatures = computed(() => this.currentAnalysisTask() === "features");
+  private panStart: { pointerId: number; x: number; y: number; panX: number; panY: number } | null = null;
 
   async ngOnInit(): Promise<void> {
     const savedTheme = localStorage.getItem("moments.theme");
@@ -373,6 +411,7 @@ export class AppComponent implements OnInit {
     this.isDetailOpen.set(true);
     this.isSettingsOpen.set(false);
     this.zoom.set(100);
+    this.resetPan();
     this.tagDraft.set("");
   }
 
@@ -391,6 +430,7 @@ export class AppComponent implements OnInit {
   protected closeDetail(): void {
     this.isDetailOpen.set(false);
     this.zoom.set(100);
+    this.resetPan();
   }
 
   protected async toggleFavorite(item: MediaItem | null = this.selectedMedia()): Promise<void> {
@@ -405,7 +445,6 @@ export class AppComponent implements OnInit {
         favorite: !current.favorite,
       });
       this.upsertMetadata(metadata);
-      this.analysisMessage.set(metadata.favorite ? "Added to Favorites." : "Removed from Favorites.");
     } catch (error) {
       this.errorMessage.set(this.describeError(error));
     }
@@ -494,11 +533,63 @@ export class AppComponent implements OnInit {
   }
 
   protected zoomOut(): void {
-    this.zoom.update((value) => Math.max(25, value - 25));
+    this.zoom.update((value) => {
+      const next = Math.max(25, value - 25);
+      if (next <= 100) {
+        this.resetPan();
+      }
+      return next;
+    });
   }
 
   protected resetZoom(): void {
     this.zoom.set(100);
+    this.resetPan();
+  }
+
+  protected handleViewerWheel(event: WheelEvent): void {
+    const item = this.selectedMedia();
+    if (!item || item.mediaType !== "photo") {
+      return;
+    }
+
+    event.preventDefault();
+    const delta = event.deltaY < 0 ? 15 : -15;
+    this.zoom.update((value) => {
+      const next = Math.min(400, Math.max(25, value + delta));
+      if (next <= 100) {
+        this.resetPan();
+      }
+      return next;
+    });
+  }
+
+  protected startPan(event: PointerEvent): void {
+    const item = this.selectedMedia();
+    if (!item || item.mediaType !== "photo" || this.zoom() <= 100 || event.button !== 0) {
+      return;
+    }
+
+    event.preventDefault();
+    this.isPanning.set(true);
+    this.panStart = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, panX: this.panX(), panY: this.panY() };
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  }
+
+  protected movePan(event: PointerEvent): void {
+    if (!this.panStart || event.pointerId !== this.panStart.pointerId) {
+      return;
+    }
+
+    this.panX.set(this.panStart.panX + event.clientX - this.panStart.x);
+    this.panY.set(this.panStart.panY + event.clientY - this.panStart.y);
+  }
+
+  protected endPan(event: PointerEvent): void {
+    if (this.panStart?.pointerId === event.pointerId) {
+      this.panStart = null;
+      this.isPanning.set(false);
+    }
   }
 
   protected closeInspector(): void {
@@ -525,6 +616,36 @@ export class AppComponent implements OnInit {
 
   protected mediaUrl(item: MediaItem): string {
     return convertFileSrc(item.path);
+  }
+
+  protected faceBoxStyle(face: FaceCandidate): Record<string, string> {
+    return {
+      left: `${face.x * 100}%`,
+      top: `${face.y * 100}%`,
+      width: `${face.width * 100}%`,
+      height: `${face.height * 100}%`,
+    };
+  }
+
+  protected markTileOrientation(item: MediaItem, event: Event): void {
+    const image = event.target instanceof HTMLImageElement ? event.target : null;
+    if (!image) {
+      return;
+    }
+
+    this.portraitMediaIds.update((ids) => {
+      const next = new Set(ids);
+      if (image.naturalHeight > image.naturalWidth * 1.12) {
+        next.add(item.id);
+      } else {
+        next.delete(item.id);
+      }
+      return next;
+    });
+  }
+
+  protected isPortraitTile(item: MediaItem): boolean {
+    return this.portraitMediaIds().has(item.id);
   }
 
   private async refreshLibrary(): Promise<void> {
@@ -595,37 +716,44 @@ export class AppComponent implements OnInit {
       return;
     }
 
+    this.currentAnalysisTask.set(command === "analyze_root_faces" ? "faces" : "features");
+    this.analysisMessage.set(
+      command === "analyze_root_faces"
+        ? "Scanning faces with the local model..."
+        : "Scanning image features with the local model...",
+    );
     this.isAnalyzingFolder.set(true);
     try {
       const result = await invoke<FolderAnalysisResult>(command, { rootId: root.id });
       for (const metadata of result.metadata) {
         this.upsertMetadata(metadata);
       }
-      if (result.faces.length > 0) {
+      if (command === "analyze_root_faces") {
+        const facesByMediaId = new Map<string, FaceCandidate[]>();
+        for (const face of result.faces) {
+          facesByMediaId.set(face.mediaId, [...(facesByMediaId.get(face.mediaId) ?? []), face]);
+        }
         this.faceAnalysisById.update((analysis) => {
           const next = { ...analysis };
-          for (const face of result.faces) {
-            const current = next[face.mediaId] ?? {
-              mediaId: face.mediaId,
-              status: "ready" as const,
-              message: "Face candidates found by folder scan.",
-              faces: [],
-            };
-            next[face.mediaId] = {
-              ...current,
-              faces: [...current.faces.filter((candidate) => candidate.id !== face.id), face],
+          for (const item of this.mediaItems().filter((candidate) => candidate.rootId === root.id && candidate.mediaType === "photo")) {
+            next[item.id] = {
+              mediaId: item.id,
+              status: result.status,
+              message: result.message,
+              faces: facesByMediaId.get(item.id) ?? [],
             };
           }
           return next;
         });
       }
-      this.settingsMessage.set(result.message);
-      this.analysisMessage.set(result.message);
+      this.settingsMessage.set("");
+      this.analysisMessage.set("");
     } catch (error) {
       this.settingsMessage.set(this.describeError(error));
       this.analysisMessage.set(this.describeError(error));
     } finally {
       this.isAnalyzingFolder.set(false);
+      this.currentAnalysisTask.set(null);
       await this.refreshSettings();
     }
   }
@@ -636,6 +764,13 @@ export class AppComponent implements OnInit {
 
   private emptyMetadata(mediaId: string): MediaMetadata {
     return { mediaId, favorite: false, tags: [], faceIds: [] };
+  }
+
+  private resetPan(): void {
+    this.panX.set(0);
+    this.panY.set(0);
+    this.isPanning.set(false);
+    this.panStart = null;
   }
 
   private isTextInput(target: EventTarget | null): boolean {

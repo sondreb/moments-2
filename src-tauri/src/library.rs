@@ -216,66 +216,46 @@ impl LibraryState {
         Ok(entry.clone())
     }
 
-    pub fn add_feature_tags_for_root(&self, root_id: &str) -> Result<Vec<MediaMetadata>, String> {
-        let media = self.photo_media_for_root(root_id)?;
-        media
+    pub fn add_tags_for_media(
+        &self,
+        media_id: String,
+        tags: Vec<String>,
+    ) -> Result<MediaMetadata, String> {
+        let current = self
+            .metadata_for_media(vec![media_id.clone()])?
             .into_iter()
-            .map(|item| {
-                let current = self
-                    .metadata_for_media(vec![item.id.clone()])?
-                    .into_iter()
-                    .next()
-                    .unwrap_or(MediaMetadata {
-                        media_id: item.id.clone(),
-                        ..MediaMetadata::default()
-                    });
-                let mut tags = current.tags;
-                tags.extend(feature_tags_for_item(&item));
-                self.set_tags(item.id, tags)
-            })
-            .collect()
+            .next()
+            .unwrap_or(MediaMetadata {
+                media_id: media_id.clone(),
+                ..MediaMetadata::default()
+            });
+        let mut merged_tags = current.tags;
+        merged_tags.extend(tags);
+        self.set_tags(media_id, merged_tags)
     }
 
-    pub fn scan_faces_for_root(&self, root_id: &str) -> Result<Vec<FaceCandidate>, String> {
-        let media = self.photo_media_for_root(root_id)?;
+    pub fn replace_faces_for_media(
+        &self,
+        media_id: String,
+        detected_faces: Vec<FaceCandidate>,
+    ) -> Result<Vec<FaceCandidate>, String> {
+        self.ensure_media_exists(&media_id)?;
         let mut faces = self
             .faces
             .lock()
             .map_err(|_| "face metadata state is unavailable")?;
-
-        faces.retain(|face| !media.iter().any(|item| item.id == face.media_id));
-
-        let generated = media
-            .iter()
-            .enumerate()
-            .map(|(index, item)| FaceCandidate {
-                id: format!("{}-face-{}", item.id, index + 1),
-                media_id: item.id.clone(),
-                name: None,
-                confidence: 0.62,
-            })
-            .collect::<Vec<_>>();
-
-        faces.extend(generated.clone());
+        faces.retain(|face| face.media_id != media_id);
+        faces.extend(detected_faces.clone());
         drop(faces);
 
-        let face_ids_by_media = generated
-            .iter()
-            .map(|face| (face.media_id.clone(), face.id.clone()))
-            .collect::<Vec<_>>();
         let mut metadata = self
             .metadata
             .lock()
             .map_err(|_| "library metadata state is unavailable")?;
+        let entry = metadata_entry(&mut metadata, media_id);
+        entry.face_ids = detected_faces.iter().map(|face| face.id.clone()).collect();
 
-        for (media_id, face_id) in face_ids_by_media {
-            let entry = metadata_entry(&mut metadata, media_id);
-            if !entry.face_ids.contains(&face_id) {
-                entry.face_ids.push(face_id);
-            }
-        }
-
-        Ok(generated)
+        Ok(detected_faces)
     }
 
     pub fn analyze_faces(&self, media_id: String) -> Result<FaceAnalysisResult, String> {
@@ -357,26 +337,6 @@ fn metadata_entry(metadata: &mut Vec<MediaMetadata>, media_id: String) -> &mut M
         ..MediaMetadata::default()
     });
     metadata.last_mut().expect("metadata was just inserted")
-}
-
-fn feature_tags_for_item(item: &MediaItem) -> Vec<String> {
-    let lower_name = item.name.to_ascii_lowercase();
-    let mut tags = vec!["photo".to_string(), "ai-feature-scan".to_string()];
-
-    for (needle, tag) in [
-        ("snow", "snow"),
-        ("ski", "skiing"),
-        ("sun", "sunny"),
-        ("screen", "screenshot"),
-        ("img", "camera"),
-        ("2026", "2026"),
-    ] {
-        if lower_name.contains(needle) {
-            tags.push(tag.to_string());
-        }
-    }
-
-    tags
 }
 
 pub struct ScanResult {

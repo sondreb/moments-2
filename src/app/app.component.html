@@ -69,8 +69,8 @@
         <button class="ghost-action" type="button" [disabled]="!selectedRoot()" (click)="selectedRoot() && scanRoot(selectedRoot()!)">
           Rescan
         </button>
-        <button class="ghost-action" type="button" [disabled]="!selectedRoot() || isAnalyzingFolder()" (click)="analyzeRootFaces()">Scan faces</button>
-        <button class="ghost-action" type="button" [disabled]="!selectedRoot() || isAnalyzingFolder()" (click)="classifyRootImages()">Scan features</button>
+        <button class="ghost-action" type="button" [disabled]="!selectedRoot() || isAnalyzingFolder()" (click)="analyzeRootFaces()"><span class="spinner" *ngIf="isScanningFaces()" aria-hidden="true"></span>{{ isScanningFaces() ? "Scanning faces" : "Scan faces" }}</button>
+        <button class="ghost-action" type="button" [disabled]="!selectedRoot() || isAnalyzingFolder()" (click)="classifyRootImages()"><span class="spinner" *ngIf="isScanningFeatures()" aria-hidden="true"></span>{{ isScanningFeatures() ? "Scanning features" : "Scan features" }}</button>
       </div>
     </header>
 
@@ -113,6 +113,10 @@
         </div>
 
         <div class="gallery-loading" *ngIf="isLoadingMedia()">Loading media...</div>
+        <div class="scan-overlay" *ngIf="isAnalyzingFolder()">
+          <span class="spinner" aria-hidden="true"></span>
+          <strong>{{ isScanningFaces() ? "Scanning faces" : "Scanning features" }}</strong>
+        </div>
 
       <section class="viewer detail-view" *ngIf="isDetailOpen() && selectedMedia() as item">
         <div class="viewer-toolbar">
@@ -132,17 +136,19 @@
           </div>
         </div>
 
-        <div class="viewer-surface" [class.video-surface]="item.mediaType === 'video'">
-          <img
-            *ngIf="item.mediaType === 'photo'"
-            [src]="mediaUrl(item)"
-            [alt]="item.name"
-            title="Selected photo"
-            [style.width]="zoomedImageWidth()"
-            [style.height]="zoomedImageHeight()"
-            [style.max-width]="zoomedImageMaxWidth()"
-            [style.max-height]="zoomedImageMaxHeight()"
-          />
+        <div class="viewer-surface" [class.video-surface]="item.mediaType === 'video'" [class.zoomed]="item.mediaType === 'photo' && zoom() > 100" [class.panning]="isPanning()" (wheel)="handleViewerWheel($event)" (pointerdown)="startPan($event)" (pointermove)="movePan($event)" (pointerup)="endPan($event)" (pointercancel)="endPan($event)" (pointerleave)="endPan($event)">
+          <div class="face-frame" *ngIf="item.mediaType === 'photo'" [ngStyle]="viewerFrameStyle()">
+            <img
+              [src]="mediaUrl(item)"
+              [alt]="item.name"
+              title="Selected photo"
+              [style.width]="zoomedImageWidth()"
+              [style.height]="zoomedImageHeight()"
+              [style.max-width]="zoomedImageMaxWidth()"
+              [style.max-height]="zoomedImageMaxHeight()"
+            />
+            <span class="face-box" *ngFor="let face of selectedFaceAnalysis()?.faces" [ngStyle]="faceBoxStyle(face)" [title]="(face.name || 'Face') + ' · ' + (face.confidence | percent)"></span>
+          </div>
           <video *ngIf="item.mediaType === 'video'" [src]="mediaUrl(item)" controls autoplay></video>
         </div>
 
@@ -160,7 +166,7 @@
 
           <section>
             <p class="eyebrow">People</p>
-            <button class="ghost-action" type="button" [disabled]="item.mediaType !== 'photo' || isAnalyzingFaces()" (click)="analyzeFaces()">Analyze faces</button>
+            <button class="ghost-action" type="button" [disabled]="item.mediaType !== 'photo' || isAnalyzingFaces()" (click)="analyzeFaces()"><span class="spinner" *ngIf="isAnalyzingFaces()" aria-hidden="true"></span>{{ isAnalyzingFaces() ? "Analyzing" : "Analyze faces" }}</button>
             <p class="metadata-note" *ngIf="selectedFaceAnalysis() as analysis">{{ analysis.message }}</p>
             <div class="face-list" *ngIf="selectedFaceAnalysis()?.faces?.length">
               <label class="face-row" *ngFor="let face of selectedFaceAnalysis()?.faces">
@@ -173,15 +179,15 @@
       </section>
 
         <section class="people-view" *ngIf="!isDetailOpen() && activeView() === 'people'">
-          <article class="empty-state compact-empty" *ngIf="people().length === 0">
+          <article class="empty-state compact-empty" *ngIf="personGroups().length === 0">
             <h3>No people found yet</h3>
             <p>Run face scanning on a photo or folder to populate this view.</p>
           </article>
-          <button class="person-card" type="button" *ngFor="let person of people()" (click)="selectPerson(person)">
-            <span class="person-avatar" aria-hidden="true">{{ person.face.name ? person.face.name[0] : "?" }}</span>
+          <button class="person-card" type="button" *ngFor="let person of personGroups()" (click)="selectPerson({ face: person.faces[0], media: person.media[0] || null })">
+            <span class="person-avatar" aria-hidden="true">{{ person.name !== "Unnamed person" ? person.name[0] : "?" }}</span>
             <span>
-              <strong>{{ person.face.name || "Unnamed person" }}</strong>
-              <small>{{ person.media?.name || person.face.mediaId }} · {{ person.face.confidence | percent }}</small>
+              <strong>{{ person.name }}</strong>
+              <small>{{ person.faces.length | number }} {{ person.faces.length === 1 ? "face" : "faces" }} · {{ person.media.length | number }} photos · {{ person.confidence | percent }}</small>
             </span>
           </button>
         </section>
@@ -197,11 +203,11 @@
         </article>
 
         <div class="media-grid" *ngIf="!isDetailOpen() && activeView() !== 'people' && activeView() !== 'recents' && activeView() !== 'imports' && visibleMediaItems().length > 0">
-          <figure class="media-tile" *ngFor="let item of visibleMediaItems()" [class.active]="isSelectedMedia(item)" (click)="selectMedia(item)" (dblclick)="openNative(item)">
-            <img *ngIf="item.mediaType === 'photo'" [src]="mediaUrl(item)" [alt]="item.name" title="Photo thumbnail" loading="lazy" />
+          <figure class="media-tile" *ngFor="let item of visibleMediaItems()" [class.active]="isSelectedMedia(item)" [class.portrait-tile]="isPortraitTile(item)" (click)="selectMedia(item)" (dblclick)="openNative(item)">
+            <img *ngIf="item.mediaType === 'photo'" [src]="mediaUrl(item)" [alt]="item.name" title="Photo thumbnail" loading="lazy" (load)="markTileOrientation(item, $event)" />
             <video *ngIf="item.mediaType === 'video'" [src]="mediaUrl(item)" preload="metadata" muted></video>
             <figcaption>
-              <span class="media-kind">{{ item.mediaType }} <span *ngIf="metadataById()[item.id]?.favorite">♥</span></span>
+              <span class="media-kind">{{ item.mediaType }} <span class="favorite-mark" *ngIf="metadataById()[item.id]?.favorite">♥</span></span>
               <strong>{{ item.name }}</strong>
             </figcaption>
           </figure>

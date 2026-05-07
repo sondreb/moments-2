@@ -264,18 +264,28 @@ pub fn record_metadata(
     Ok(())
 }
 
-pub fn record_faces(app: &AppHandle, faces: &[FaceCandidate]) -> Result<(), String> {
+pub fn replace_faces_for_media(
+    app: &AppHandle,
+    media_id: &str,
+    faces: &[FaceCandidate],
+) -> Result<(), String> {
     let mut connection = open_database(app)?;
     let transaction = connection
         .transaction()
         .map_err(|error| format!("failed to start face database transaction: {error}"))?;
+    transaction
+        .execute(
+            "delete from face_candidates where media_id = ?1",
+            params![media_id],
+        )
+        .map_err(|error| format!("failed to replace face candidates: {error}"))?;
 
     for face in faces {
         transaction
             .execute(
-                "insert into face_candidates (id, media_id, name, confidence) values (?1, ?2, ?3, ?4)
-                 on conflict(id) do update set name = excluded.name, confidence = excluded.confidence",
-                params![&face.id, &face.media_id, &face.name, face.confidence],
+                "insert into face_candidates (id, media_id, name, confidence, x, y, width, height) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 on conflict(id) do update set media_id = excluded.media_id, name = excluded.name, confidence = excluded.confidence, x = excluded.x, y = excluded.y, width = excluded.width, height = excluded.height",
+                params![&face.id, &face.media_id, &face.name, face.confidence, face.x, face.y, face.width, face.height],
             )
             .map_err(|error| format!("failed to record face candidate: {error}"))?;
     }
@@ -290,6 +300,14 @@ pub fn installed_model(app: &AppHandle, task: &str) -> Result<Option<AiModelInfo
     Ok(available_models(app)?
         .into_iter()
         .find(|model| model.installed && model.task.eq_ignore_ascii_case(task)))
+}
+
+pub fn model_path(app: &AppHandle, model: &AiModelInfo) -> Result<PathBuf, String> {
+    Ok(models_dir(app)?.join(&model.file_name))
+}
+
+pub fn inference_cache_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(cache_dir(app)?.join("inference"))
 }
 
 fn model_definition(model_id: &str) -> Result<&'static ModelDefinition, String> {
@@ -357,10 +375,65 @@ fn initialize_database(connection: &Connection) -> Result<(), String> {
                 id text primary key,
                 media_id text not null,
                 name text,
-                confidence real not null default 0
+                confidence real not null default 0,
+                x real not null default 0,
+                y real not null default 0,
+                width real not null default 0,
+                height real not null default 0
             );",
         )
         .map_err(|error| format!("failed to initialize database: {error}"))?;
+    ensure_column(
+        connection,
+        "face_candidates",
+        "x",
+        "real not null default 0",
+    )?;
+    ensure_column(
+        connection,
+        "face_candidates",
+        "y",
+        "real not null default 0",
+    )?;
+    ensure_column(
+        connection,
+        "face_candidates",
+        "width",
+        "real not null default 0",
+    )?;
+    ensure_column(
+        connection,
+        "face_candidates",
+        "height",
+        "real not null default 0",
+    )?;
+    Ok(())
+}
+
+fn ensure_column(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<(), String> {
+    let mut statement = connection
+        .prepare(&format!("pragma table_info({table})"))
+        .map_err(|error| format!("failed to inspect {table}: {error}"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| format!("failed to inspect {table}: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed to inspect {table}: {error}"))?;
+
+    if !columns.iter().any(|candidate| candidate == column) {
+        connection
+            .execute(
+                &format!("alter table {table} add column {column} {definition}"),
+                [],
+            )
+            .map_err(|error| format!("failed to migrate {table}.{column}: {error}"))?;
+    }
+
     Ok(())
 }
 
