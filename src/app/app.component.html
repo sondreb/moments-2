@@ -149,6 +149,7 @@
             <button class="icon-action" type="button" title="Zoom out" [disabled]="item.mediaType !== 'photo'" (click)="zoomOut()">−</button>
             <button class="zoom-value" type="button" title="Reset zoom" [disabled]="item.mediaType !== 'photo'" (click)="resetZoom()">{{ zoom() }}%</button>
             <button class="icon-action" type="button" title="Zoom in" [disabled]="item.mediaType !== 'photo'" (click)="zoomIn()">+</button>
+            <button class="icon-action" type="button" title="Toggle inspector" [attr.aria-pressed]="inspectorVisible()" (click)="inspectorVisible.set(!inspectorVisible())">ⓘ</button>
             <button class="ghost-action" type="button" (click)="openNative(item)">Open</button>
             <button class="icon-action close-button" type="button" title="Back to gallery" (click)="closeDetail()">×</button>
           </div>
