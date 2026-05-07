@@ -22,6 +22,40 @@ pub struct MediaItem {
     pub media_type: MediaType,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaMetadata {
+    pub media_id: String,
+    pub favorite: bool,
+    pub tags: Vec<String>,
+    pub face_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FaceCandidate {
+    pub id: String,
+    pub media_id: String,
+    pub name: Option<String>,
+    pub confidence: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FaceAnalysisResult {
+    pub media_id: String,
+    pub status: FaceAnalysisStatus,
+    pub message: String,
+    pub faces: Vec<FaceCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FaceAnalysisStatus {
+    Ready,
+    ModelMissing,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum MediaType {
@@ -54,4 +88,64 @@ pub struct LibraryOverview {
     pub photo_count: u64,
     pub video_count: u64,
     pub media_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiModelInfo {
+    pub id: String,
+    pub name: String,
+    pub task: String,
+    pub accelerator: String,
+    pub description: String,
+    pub file_name: String,
+    pub download_url: String,
+    pub installed: bool,
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelInstallResult {
+    pub model: AiModelInfo,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelDeleteResult {
+    pub model: AiModelInfo,
+    pub removed_bytes: u64,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderAnalysisResult {
+    pub root_id: String,
+    pub task: String,
+    pub model_id: String,
+    pub processed_media: u64,
+    pub status: FaceAnalysisStatus,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheClearResult {
+    pub removed_files: u64,
+    pub removed_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseStats {
+    pub path: String,
+    pub size_bytes: u64,
+    pub root_count: u64,
+    pub media_count: u64,
+    pub metadata_count: u64,
+    pub favorite_count: u64,
+    pub tag_count: u64,
+    pub face_count: u64,
 }

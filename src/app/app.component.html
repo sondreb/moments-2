@@ -1,5 +1,5 @@
-<main class="app-shell" [class.dark-theme]="effectiveTheme() === 'dark'" [class.sidebar-hidden]="!sidebarVisible()" [class.inspector-hidden]="!inspectorVisible()">
-  <aside class="sidebar" aria-label="Library folders" *ngIf="sidebarVisible()">
+<main class="app-shell" [class.dark-theme]="effectiveTheme() === 'dark'" [class.sidebar-hidden]="!sidebarVisible()" [class.inspector-hidden]="!inspectorVisible()" [class.detail-open]="isDetailOpen()" [class.settings-open]="isSettingsOpen()">
+  <aside class="sidebar" aria-label="Library folders" *ngIf="sidebarVisible() && !isDetailOpen()">
     <div class="brand-block">
       <img class="brand-mark" src="/assets/moments-mark.svg" alt="Moments" />
       <div>
@@ -9,10 +9,12 @@
     </div>
 
     <nav class="primary-nav" aria-label="Moments sections">
-      <button class="nav-row active" type="button"><span aria-hidden="true">▣</span> Library</button>
-      <button class="nav-row" type="button"><span aria-hidden="true">♥</span> Favorites</button>
-      <button class="nav-row" type="button"><span aria-hidden="true">◷</span> Recents</button>
-      <button class="nav-row" type="button"><span aria-hidden="true">⇪</span> Imports</button>
+      <button class="nav-row" type="button" [class.active]="activeView() === 'library' && !isSettingsOpen()" (click)="showView('library')"><span aria-hidden="true">▣</span> Library</button>
+      <button class="nav-row" type="button" [class.active]="activeView() === 'favorites' && !isSettingsOpen()" (click)="showView('favorites')"><span aria-hidden="true">♥</span> Favorites <small>{{ favoriteCount() }}</small></button>
+      <button class="nav-row" type="button" [class.active]="activeView() === 'people' && !isSettingsOpen()" (click)="showView('people')"><span aria-hidden="true">◎</span> People <small>{{ peopleCount() }}</small></button>
+      <button class="nav-row" type="button" [class.active]="activeView() === 'recents' && !isSettingsOpen()" (click)="showView('recents')"><span aria-hidden="true">◷</span> Recents</button>
+      <button class="nav-row" type="button" [class.active]="activeView() === 'imports' && !isSettingsOpen()" (click)="showView('imports')"><span aria-hidden="true">⇪</span> Imports</button>
+      <button class="nav-row" type="button" [class.active]="isSettingsOpen()" (click)="openSettings()"><span aria-hidden="true">⚙</span> Settings</button>
     </nav>
 
     <button class="primary-action" type="button" (click)="addFolder()" [disabled]="isAddingFolder()">
@@ -40,12 +42,12 @@
   </aside>
 
   <section class="workspace" aria-label="Gallery workspace">
-    <header class="toolbar">
+    <header class="toolbar" *ngIf="!isDetailOpen() && !isSettingsOpen()">
       <div class="toolbar-title">
         <button class="icon-action" type="button" title="Show folders" (click)="sidebarVisible.set(!sidebarVisible())">☰</button>
         <div>
           <p class="eyebrow">{{ overview().rootCount }} folders · {{ totalMedia() }} media</p>
-          <h2>{{ selectedRootName() }}</h2>
+          <h2>{{ activeViewTitle() }}</h2>
         </div>
       </div>
 
@@ -73,32 +75,57 @@
     <p class="error-banner" *ngIf="errorMessage()">{{ errorMessage() }}</p>
 
     <section class="gallery-stage" aria-label="Media">
-      <div class="empty-state" *ngIf="roots().length === 0">
-        <h3>Your library is empty</h3>
-        <button class="primary-action compact" type="button" (click)="addFolder()">Add folder</button>
-      </div>
+      <app-settings
+        *ngIf="isSettingsOpen()"
+        [models]="aiModels()"
+        [databaseStats]="databaseStats()"
+        [isInstallingModel]="isInstallingModel()"
+        [isDeletingModel]="isDeletingModel()"
+        [isClearingCache]="isClearingCache()"
+        [isAnalyzingFolder]="isAnalyzingFolder()"
+        [selectedRootName]="selectedRootName()"
+        [selectedRootId]="selectedRootIdentifier()"
+        [themeMode]="themeMode()"
+        [statusMessage]="settingsMessage()"
+        (installModel)="installModel($event)"
+        (deleteModel)="deleteModel($event)"
+        (analyzeRootFaces)="analyzeRootFaces()"
+        (classifyRootImages)="classifyRootImages()"
+        (themeModeChange)="setThemeMode($event)"
+        (clearCache)="clearCache()"
+        (refresh)="refreshSettings()"
+        (closeSettings)="closeSettings()"
+      ></app-settings>
 
-      <div class="scan-summary" *ngIf="lastScan() as scan">
-        <strong>{{ scan.mediaCount | number }}</strong>
-        <span>media indexed</span>
-        <small>{{ scan.photoCount | number }} photos · {{ scan.videoCount | number }} videos · {{ scan.skippedCount | number }} other files skipped</small>
-      </div>
+      <ng-container *ngIf="!isSettingsOpen()">
+        <div class="empty-state" *ngIf="roots().length === 0">
+          <h3>Your library is empty</h3>
+          <button class="primary-action compact" type="button" (click)="addFolder()">Add folder</button>
+        </div>
 
-      <div class="gallery-loading" *ngIf="isLoadingMedia()">Loading media...</div>
+        <div class="scan-summary" *ngIf="!isDetailOpen() && lastScan() as scan">
+          <strong>{{ scan.mediaCount | number }}</strong>
+          <span>media indexed</span>
+          <small>{{ scan.photoCount | number }} photos · {{ scan.videoCount | number }} videos · {{ scan.skippedCount | number }} other files skipped</small>
+        </div>
 
-      <section class="viewer" *ngIf="selectedMedia() as item">
+        <div class="gallery-loading" *ngIf="isLoadingMedia()">Loading media...</div>
+
+      <section class="viewer detail-view" *ngIf="isDetailOpen() && selectedMedia() as item">
         <div class="viewer-toolbar">
           <div class="viewer-title">
             <strong>{{ item.name }}</strong>
             <span>{{ item.mediaType }} · {{ selectedMediaIndex() + 1 }} / {{ mediaItems().length }}</span>
           </div>
           <div class="viewer-actions">
+            <button class="icon-action favorite-action" type="button" title="Favorite" [class.active]="selectedMediaMetadata()?.favorite" (click)="toggleFavorite(item)">♥</button>
             <button class="icon-action" type="button" title="Previous" [disabled]="selectedMediaIndex() <= 0" (click)="previousMedia()">‹</button>
             <button class="icon-action" type="button" title="Next" [disabled]="selectedMediaIndex() >= mediaItems().length - 1" (click)="nextMedia()">›</button>
             <button class="icon-action" type="button" title="Zoom out" [disabled]="item.mediaType !== 'photo'" (click)="zoomOut()">−</button>
             <button class="zoom-value" type="button" title="Reset zoom" [disabled]="item.mediaType !== 'photo'" (click)="resetZoom()">{{ zoom() }}%</button>
             <button class="icon-action" type="button" title="Zoom in" [disabled]="item.mediaType !== 'photo'" (click)="zoomIn()">+</button>
             <button class="ghost-action" type="button" (click)="openNative(item)">Open native</button>
+            <button class="icon-action close-button" type="button" title="Back to gallery" (click)="closeDetail()">×</button>
           </div>
         </div>
 
@@ -109,23 +136,74 @@
             [alt]="item.name"
             title="Selected photo"
             [style.width]="zoomedImageWidth()"
+            [style.height]="zoomedImageHeight()"
             [style.max-width]="zoomedImageMaxWidth()"
             [style.max-height]="zoomedImageMaxHeight()"
           />
           <video *ngIf="item.mediaType === 'video'" [src]="mediaUrl(item)" controls autoplay></video>
         </div>
+
+        <aside class="detail-metadata">
+          <section>
+            <p class="eyebrow">Tags</p>
+            <div class="tag-list" *ngIf="selectedMediaMetadata() as metadata">
+              <button class="tag-chip" type="button" *ngFor="let tag of metadata.tags" (click)="removeTag(tag)">{{ tag }} ×</button>
+            </div>
+            <div class="tag-entry">
+              <input type="text" placeholder="Add classification tag" [value]="tagDraft()" (input)="tagDraft.set($any($event.target).value)" (keydown.enter)="addTag()" />
+              <button class="ghost-action" type="button" (click)="addTag()">Add</button>
+            </div>
+          </section>
+
+          <section>
+            <p class="eyebrow">People</p>
+            <button class="ghost-action" type="button" [disabled]="item.mediaType !== 'photo' || isAnalyzingFaces()" (click)="analyzeFaces()">Analyze faces</button>
+            <p class="metadata-note" *ngIf="selectedFaceAnalysis() as analysis">{{ analysis.message }}</p>
+            <div class="face-list" *ngIf="selectedFaceAnalysis()?.faces?.length">
+              <label class="face-row" *ngFor="let face of selectedFaceAnalysis()?.faces">
+                <span>Face {{ face.confidence | percent }}</span>
+                <input type="text" [value]="face.name || ''" placeholder="Name person" (change)="renameFace(face, $event)" />
+              </label>
+            </div>
+          </section>
+        </aside>
       </section>
 
-      <div class="media-grid" *ngIf="mediaItems().length > 0">
-        <figure class="media-tile" *ngFor="let item of mediaItems()" [class.active]="isSelectedMedia(item)" (click)="selectMedia(item)" (dblclick)="openNative(item)">
-          <img *ngIf="item.mediaType === 'photo'" [src]="mediaUrl(item)" [alt]="item.name" title="Photo thumbnail" loading="lazy" />
-          <video *ngIf="item.mediaType === 'video'" [src]="mediaUrl(item)" preload="metadata" muted></video>
-          <figcaption>
-            <span class="media-kind">{{ item.mediaType }}</span>
-            <strong>{{ item.name }}</strong>
-          </figcaption>
-        </figure>
-      </div>
+        <section class="people-view" *ngIf="!isDetailOpen() && activeView() === 'people'">
+          <article class="empty-state compact-empty" *ngIf="people().length === 0">
+            <h3>No people found yet</h3>
+            <p>Run face scanning on a photo or folder to populate this view.</p>
+          </article>
+          <button class="person-card" type="button" *ngFor="let person of people()" (click)="selectPerson(person)">
+            <span class="person-avatar" aria-hidden="true">{{ person.face.name ? person.face.name[0] : "?" }}</span>
+            <span>
+              <strong>{{ person.face.name || "Unnamed person" }}</strong>
+              <small>{{ person.media?.name || person.face.mediaId }} · {{ person.face.confidence | percent }}</small>
+            </span>
+          </button>
+        </section>
+
+        <article class="empty-state compact-empty" *ngIf="!isDetailOpen() && activeView() === 'favorites' && visibleMediaItems().length === 0">
+          <h3>No favorites yet</h3>
+          <p>Use the heart button while viewing media to add it here.</p>
+        </article>
+
+        <article class="empty-state compact-empty" *ngIf="!isDetailOpen() && (activeView() === 'recents' || activeView() === 'imports')">
+          <h3>{{ activeViewTitle() }} is coming online</h3>
+          <p>This section is reserved for timeline and import tracking.</p>
+        </article>
+
+        <div class="media-grid" *ngIf="!isDetailOpen() && activeView() !== 'people' && activeView() !== 'recents' && activeView() !== 'imports' && visibleMediaItems().length > 0">
+          <figure class="media-tile" *ngFor="let item of visibleMediaItems()" [class.active]="isSelectedMedia(item)" (click)="selectMedia(item)" (dblclick)="openNative(item)">
+            <img *ngIf="item.mediaType === 'photo'" [src]="mediaUrl(item)" [alt]="item.name" title="Photo thumbnail" loading="lazy" />
+            <video *ngIf="item.mediaType === 'video'" [src]="mediaUrl(item)" preload="metadata" muted></video>
+            <figcaption>
+              <span class="media-kind">{{ item.mediaType }} <span *ngIf="metadataById()[item.id]?.favorite">♥</span></span>
+              <strong>{{ item.name }}</strong>
+            </figcaption>
+          </figure>
+        </div>
+      </ng-container>
     </section>
   </section>
 
@@ -141,6 +219,14 @@
       <div *ngIf="selectedMedia() as item">
         <dt>Selected media</dt>
         <dd>{{ item.mediaType }}</dd>
+      </div>
+      <div *ngIf="selectedMediaMetadata() as metadata">
+        <dt>Favorite</dt>
+        <dd>{{ metadata.favorite ? "Yes" : "No" }}</dd>
+      </div>
+      <div *ngIf="selectedMediaMetadata() as metadata">
+        <dt>Tags</dt>
+        <dd>{{ metadata.tags.length ? metadata.tags.join(", ") : "-" }}</dd>
       </div>
       <div>
         <dt>Path</dt>

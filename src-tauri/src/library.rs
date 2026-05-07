@@ -6,13 +6,16 @@ use std::{
 };
 
 use crate::models::{
-    LibraryOverview, LibraryRoot, LibraryRootStatus, MediaItem, MediaType, ScanStats,
+    FaceAnalysisResult, FaceAnalysisStatus, FaceCandidate, LibraryOverview, LibraryRoot,
+    LibraryRootStatus, MediaItem, MediaMetadata, MediaType, ScanStats,
 };
 
 #[derive(Default)]
 pub struct LibraryState {
     roots: Mutex<Vec<LibraryRoot>>,
     media_items: Mutex<Vec<MediaItem>>,
+    metadata: Mutex<Vec<MediaMetadata>>,
+    faces: Mutex<Vec<FaceCandidate>>,
 }
 
 impl LibraryState {
@@ -124,6 +127,118 @@ impl LibraryState {
             .collect())
     }
 
+    pub fn photo_count_for_root(&self, root_id: &str) -> Result<u64, String> {
+        let media_items = self
+            .media_items
+            .lock()
+            .map_err(|_| "library media state is unavailable")?;
+
+        Ok(media_items
+            .iter()
+            .filter(|item| item.root_id == root_id && matches!(item.media_type, MediaType::Photo))
+            .count() as u64)
+    }
+
+    pub fn media_path(&self, media_id: &str) -> Result<PathBuf, String> {
+        let media_items = self
+            .media_items
+            .lock()
+            .map_err(|_| "library media state is unavailable")?;
+
+        media_items
+            .iter()
+            .find(|item| item.id == media_id)
+            .map(|item| PathBuf::from(&item.path))
+            .ok_or_else(|| format!("media item '{media_id}' was not found"))
+    }
+
+    pub fn metadata_for_media(&self, media_ids: Vec<String>) -> Result<Vec<MediaMetadata>, String> {
+        let metadata = self
+            .metadata
+            .lock()
+            .map_err(|_| "library metadata state is unavailable")?;
+
+        Ok(media_ids
+            .into_iter()
+            .map(|media_id| {
+                metadata
+                    .iter()
+                    .find(|entry| entry.media_id == media_id)
+                    .cloned()
+                    .unwrap_or(MediaMetadata {
+                        media_id,
+                        ..MediaMetadata::default()
+                    })
+            })
+            .collect())
+    }
+
+    pub fn set_favorite(&self, media_id: String, favorite: bool) -> Result<MediaMetadata, String> {
+        self.ensure_media_exists(&media_id)?;
+        let mut metadata = self
+            .metadata
+            .lock()
+            .map_err(|_| "library metadata state is unavailable")?;
+        let entry = metadata_entry(&mut metadata, media_id);
+        entry.favorite = favorite;
+        Ok(entry.clone())
+    }
+
+    pub fn set_tags(&self, media_id: String, tags: Vec<String>) -> Result<MediaMetadata, String> {
+        self.ensure_media_exists(&media_id)?;
+        let mut normalized_tags = tags
+            .into_iter()
+            .map(|tag| tag.trim().to_string())
+            .filter(|tag| !tag.is_empty())
+            .collect::<Vec<_>>();
+        normalized_tags.sort_by_key(|tag| tag.to_ascii_lowercase());
+        normalized_tags.dedup_by(|first, second| first.eq_ignore_ascii_case(second));
+
+        let mut metadata = self
+            .metadata
+            .lock()
+            .map_err(|_| "library metadata state is unavailable")?;
+        let entry = metadata_entry(&mut metadata, media_id);
+        entry.tags = normalized_tags;
+        Ok(entry.clone())
+    }
+
+    pub fn analyze_faces(&self, media_id: String) -> Result<FaceAnalysisResult, String> {
+        self.ensure_media_exists(&media_id)?;
+        let faces = self
+            .faces
+            .lock()
+            .map_err(|_| "face metadata state is unavailable")?
+            .iter()
+            .filter(|face| face.media_id == media_id)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        Ok(FaceAnalysisResult {
+            media_id,
+            status: FaceAnalysisStatus::ModelMissing,
+            message:
+                "Face analysis is ready for a local model, but no model bundle is installed yet."
+                    .to_string(),
+            faces,
+        })
+    }
+
+    pub fn set_face_name(&self, face_id: String, name: String) -> Result<FaceCandidate, String> {
+        let mut faces = self
+            .faces
+            .lock()
+            .map_err(|_| "face metadata state is unavailable")?;
+        let face = faces
+            .iter_mut()
+            .find(|face| face.id == face_id)
+            .ok_or_else(|| format!("face '{face_id}' was not found"))?;
+
+        let trimmed = name.trim();
+        face.name = (!trimmed.is_empty()).then(|| trimmed.to_string());
+        Ok(face.clone())
+    }
+
     pub fn clear_media(&self, root_id: &str) -> Result<(), String> {
         let mut media_items = self
             .media_items
@@ -143,6 +258,30 @@ impl LibraryState {
         }
         Ok(())
     }
+
+    fn ensure_media_exists(&self, media_id: &str) -> Result<(), String> {
+        let media_items = self
+            .media_items
+            .lock()
+            .map_err(|_| "library media state is unavailable")?;
+        media_items
+            .iter()
+            .any(|item| item.id == media_id)
+            .then_some(())
+            .ok_or_else(|| format!("media item '{media_id}' was not found"))
+    }
+}
+
+fn metadata_entry(metadata: &mut Vec<MediaMetadata>, media_id: String) -> &mut MediaMetadata {
+    if let Some(index) = metadata.iter().position(|entry| entry.media_id == media_id) {
+        return &mut metadata[index];
+    }
+
+    metadata.push(MediaMetadata {
+        media_id,
+        ..MediaMetadata::default()
+    });
+    metadata.last_mut().expect("metadata was just inserted")
 }
 
 pub struct ScanResult {
