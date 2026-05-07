@@ -1,4 +1,5 @@
 use tauri::Manager;
+use tauri_plugin_updater::Builder as UpdaterBuilder;
 
 mod commands;
 mod inference;
@@ -6,12 +7,31 @@ mod library;
 mod models;
 mod services;
 
+fn configured_updater_plugin() -> Option<tauri::plugin::TauriPlugin<tauri::Wry, tauri_plugin_updater::Config>> {
+    let pubkey = option_env!("MOMENTS_UPDATER_PUBLIC_KEY")?.trim();
+    let endpoint = option_env!("MOMENTS_UPDATER_ENDPOINT")?.trim();
+    if pubkey.is_empty() || endpoint.is_empty() {
+        return None;
+    }
+
+    Some(UpdaterBuilder::new().pubkey(pubkey).endpoints(vec![endpoint.to_string()]).build())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .manage(library::LibraryState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init());
+
+    let builder = if let Some(plugin) = configured_updater_plugin() {
+        builder.plugin(plugin)
+    } else {
+        builder
+    };
+
+    builder
         .setup(|app| {
             let state = app.state::<library::LibraryState>();
             let _ = commands::hydrate_current_space(state.inner(), &app.handle());
@@ -25,6 +45,7 @@ pub fn run() {
             commands::get_media_metadata,
             commands::get_face_candidates,
             commands::get_database_stats,
+            commands::get_updater_state,
             commands::classify_root_images,
             commands::delete_ai_model,
             commands::install_ai_model,

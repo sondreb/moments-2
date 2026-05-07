@@ -23,6 +23,40 @@
       </div>
     </section>
 
+    <section class="settings-panel update-panel">
+      <p class="eyebrow">App Updates</p>
+      <h3>{{ currentVersion ? ('Version ' + currentVersion) : 'Updater' }}</h3>
+      <p *ngIf="!updaterEnabled">Updater is not configured for this build yet.</p>
+      <p *ngIf="updaterEnabled && !availableUpdate && !updateReadyToRestart">Checks GitHub releases for signed desktop updates.</p>
+
+      <div class="update-status" *ngIf="updaterEnabled && availableUpdate as update">
+        <strong>Version {{ update.version }} is available</strong>
+        <small *ngIf="update.date">Published {{ update.date | date:'mediumDate' }}</small>
+        <p *ngIf="update.body" class="update-notes">{{ update.body }}</p>
+      </div>
+
+      <div class="update-progress" *ngIf="isInstallingUpdate">
+        <div class="update-progress-copy">
+          <strong>Downloading update</strong>
+          <small *ngIf="updateContentLength > 0">{{ formatBytes(updateDownloadedBytes) }} of {{ formatBytes(updateContentLength) }} · {{ updateProgressPercent() }}%</small>
+          <small *ngIf="updateContentLength === 0">Preparing download...</small>
+        </div>
+        <progress [value]="updateContentLength > 0 ? updateDownloadedBytes : null" [max]="updateContentLength || 1"></progress>
+      </div>
+
+      <p class="panel-message" *ngIf="updateStatusMessage">{{ updateStatusMessage }}</p>
+
+      <div class="settings-actions left" *ngIf="updaterEnabled">
+        <button class="secondary-button" type="button" [disabled]="isCheckingForUpdates || isInstallingUpdate" (click)="checkForUpdates.emit()">
+          {{ isCheckingForUpdates ? 'Checking...' : 'Check now' }}
+        </button>
+        <button class="primary-button" type="button" *ngIf="availableUpdate && !updateReadyToRestart" [disabled]="isInstallingUpdate || isCheckingForUpdates" (click)="installUpdate.emit()">
+          {{ isInstallingUpdate ? 'Installing...' : 'Download and install' }}
+        </button>
+        <button class="primary-button" type="button" *ngIf="updateReadyToRestart" (click)="restartToApplyUpdate.emit()">Restart to finish update</button>
+      </div>
+    </section>
+
     <section class="settings-panel folder-analysis-panel">
       <p class="eyebrow">Folder AI</p>
       <h3>{{ selectedRootName }}</h3>

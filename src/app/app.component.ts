@@ -2,7 +2,9 @@ import { CommonModule } from "@angular/common";
 import { Component, ElementRef, HostListener, OnInit, computed, effect, signal, viewChild } from "@angular/core";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { AiModelInfo, DatabaseStats, SettingsComponent } from "./settings.component";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
+import { AiModelInfo, AvailableUpdateInfo, DatabaseStats, SettingsComponent } from "./settings.component";
 
 type LibraryRootStatus = "ready" | "scanning" | "error";
 type MediaType = "photo" | "video";
@@ -116,6 +118,11 @@ interface SpaceCatalog {
   spaces: AppSpace[];
 }
 
+interface UpdaterBuildState {
+  enabled: boolean;
+  currentVersion: string;
+}
+
 interface PersonResult {
   face: FaceCandidate;
   media: MediaItem | null;
@@ -171,6 +178,15 @@ export class AppComponent implements OnInit {
   protected readonly isAnalyzingFolder = signal(false);
   protected readonly tagDraft = signal("");
   protected readonly settingsMessage = signal("");
+  protected readonly updaterEnabled = signal(false);
+  protected readonly currentVersion = signal("");
+  protected readonly availableUpdate = signal<AvailableUpdateInfo | null>(null);
+  protected readonly updateStatusMessage = signal("");
+  protected readonly isCheckingForUpdates = signal(false);
+  protected readonly isInstallingUpdate = signal(false);
+  protected readonly updateDownloadedBytes = signal(0);
+  protected readonly updateContentLength = signal(0);
+  protected readonly updateReadyToRestart = signal(false);
   protected readonly analysisMessage = signal("");
   protected readonly currentAnalysisTask = signal<"faces" | "features" | null>(null);
   protected readonly aiModels = signal<AiModelInfo[]>([]);
@@ -208,6 +224,7 @@ export class AppComponent implements OnInit {
   private webSampleMedia: MediaItem[] = [];
   private detailToolbarTimer: ReturnType<typeof setTimeout> | null = null;
   private detailCarouselTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingUpdate: Update | null = null;
 
   private readonly persistTheme = effect(() => {
     localStorage.setItem("moments.theme", this.themeMode());
@@ -417,7 +434,7 @@ export class AppComponent implements OnInit {
     await this.refreshSpaces();
     await this.refreshLibrary();
     if (this.desktopAvailable) {
-      await Promise.all([this.refreshSettings(), this.refreshKnownPeople()]);
+      await Promise.all([this.refreshSettings(), this.refreshKnownPeople(), this.initializeUpdater()]);
     } else {
       this.settingsMessage.set("Desktop features are unavailable in the browser preview.");
     }
@@ -603,6 +620,83 @@ export class AppComponent implements OnInit {
     } catch (error) {
       this.errorMessage.set(this.describeError(error));
     }
+  }
+
+  protected async checkForUpdates(): Promise<void> {
+    if (!this.desktopAvailable || !this.updaterEnabled()) {
+      return;
+    }
+
+    this.isCheckingForUpdates.set(true);
+    this.updateStatusMessage.set("Checking for updates...");
+    this.updateReadyToRestart.set(false);
+    this.updateDownloadedBytes.set(0);
+    this.updateContentLength.set(0);
+    try {
+      const update = await check();
+      this.replacePendingUpdate(update);
+      if (!update) {
+        this.availableUpdate.set(null);
+        this.updateStatusMessage.set(`Moments ${this.currentVersion()} is up to date.`);
+        return;
+      }
+
+      this.availableUpdate.set({
+        currentVersion: update.currentVersion,
+        version: update.version,
+        date: update.date ?? null,
+        body: update.body ?? null,
+      });
+      this.updateStatusMessage.set(`Version ${update.version} is ready to download.`);
+    } catch (error) {
+      this.updateStatusMessage.set(this.describeError(error));
+    } finally {
+      this.isCheckingForUpdates.set(false);
+    }
+  }
+
+  protected async installUpdate(): Promise<void> {
+    if (!this.pendingUpdate) {
+      this.updateStatusMessage.set("Check for updates again before installing.");
+      return;
+    }
+
+    this.isInstallingUpdate.set(true);
+    this.updateDownloadedBytes.set(0);
+    this.updateContentLength.set(0);
+    this.updateStatusMessage.set(`Downloading Moments ${this.pendingUpdate.version}...`);
+
+    try {
+      await this.pendingUpdate.downloadAndInstall((event: DownloadEvent) => {
+        switch (event.event) {
+          case "Started":
+            this.updateContentLength.set(event.data.contentLength);
+            this.updateDownloadedBytes.set(0);
+            break;
+          case "Progress":
+            this.updateDownloadedBytes.update((downloaded) => downloaded + event.data.chunkLength);
+            break;
+          case "Finished":
+            if (this.updateContentLength() === 0) {
+              this.updateContentLength.set(this.updateDownloadedBytes());
+            }
+            break;
+        }
+      });
+
+      const installedVersion = this.pendingUpdate.version;
+      this.replacePendingUpdate(null);
+      this.updateReadyToRestart.set(true);
+      this.updateStatusMessage.set(`Moments ${installedVersion} has been installed. Restart the app to finish applying the update.`);
+    } catch (error) {
+      this.updateStatusMessage.set(this.describeError(error));
+    } finally {
+      this.isInstallingUpdate.set(false);
+    }
+  }
+
+  protected async restartToApplyUpdate(): Promise<void> {
+    await relaunch();
   }
 
   protected async installModel(modelId: string): Promise<void> {
@@ -1397,6 +1491,22 @@ export class AppComponent implements OnInit {
     return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
   }
 
+  private async initializeUpdater(): Promise<void> {
+    try {
+      const updaterState = await invoke<UpdaterBuildState>("get_updater_state");
+      this.updaterEnabled.set(updaterState.enabled);
+      this.currentVersion.set(updaterState.currentVersion);
+      if (!updaterState.enabled) {
+        this.updateStatusMessage.set("Updater is not configured for this build yet.");
+        return;
+      }
+
+      await this.checkForUpdates();
+    } catch (error) {
+      this.updateStatusMessage.set(this.describeError(error));
+    }
+  }
+
   private async loadMetadata(mediaIds: string[]): Promise<void> {
     if (!this.desktopAvailable) {
       this.metadataById.set({});
@@ -1712,6 +1822,11 @@ export class AppComponent implements OnInit {
     if (initialRoot) {
       await this.loadMedia(initialRoot.id);
     }
+  }
+
+  private replacePendingUpdate(update: Update | null): void {
+    void this.pendingUpdate?.close();
+    this.pendingUpdate = update;
   }
 
   private async loadWebSamples(): Promise<MediaItem[]> {

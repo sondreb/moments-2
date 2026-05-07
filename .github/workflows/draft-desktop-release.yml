@@ -25,6 +25,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         include:
           - name: Linux x64
@@ -81,37 +82,23 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Build Tauri app
-        run: npm run tauri build -- --target ${{ matrix.target }}
-
-      - name: Upload bundled artifacts
-        uses: actions/upload-artifact@v4
+      - name: Build Tauri app and upload release assets
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          MOMENTS_UPDATER_PUBLIC_KEY: ${{ vars.MOMENTS_UPDATER_PUBLIC_KEY }}
+          MOMENTS_UPDATER_ENDPOINT: https://github.com/${{ github.repository }}/releases/latest/download/latest.json
         with:
-          name: bundle-${{ matrix.target }}
-          path: src-tauri/target/${{ matrix.target }}/release/bundle/**
-          if-no-files-found: error
-
-  release:
-    name: Create draft release
-    needs: build
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Download all bundles
-        uses: actions/download-artifact@v4
-        with:
-          path: release-assets
-          pattern: bundle-*
-          merge-multiple: true
-
-      - name: Create or update GitHub draft release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.tag }}
-          name: ${{ inputs.release_name != '' && inputs.release_name || format('Moments {0}', inputs.tag) }}
-          body: |
+          tagName: ${{ inputs.tag }}
+          releaseName: ${{ inputs.release_name != '' && inputs.release_name || format('Moments {0}', inputs.tag) }}
+          releaseBody: |
             Automated desktop build for ${{ inputs.tag }}.
 
             This release is created as a draft so it can be reviewed and published manually.
-          draft: true
+            The assets include signed updater metadata for in-app updates after the draft is published.
+          releaseDraft: true
           prerelease: false
-          files: release-assets/**
+          uploadUpdaterJson: true
+          args: --target ${{ matrix.target }}

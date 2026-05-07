@@ -24,6 +24,13 @@ export interface DatabaseStats {
   faceCount: number;
 }
 
+export interface AvailableUpdateInfo {
+  currentVersion: string;
+  version: string;
+  date: string | null;
+  body: string | null;
+}
+
 @Component({
   selector: "app-settings",
   imports: [CommonModule],
@@ -41,6 +48,15 @@ export class SettingsComponent {
   @Input() selectedRootId: string | null = null;
   @Input() themeMode: "auto" | "light" | "dark" = "auto";
   @Input() statusMessage = "";
+  @Input() updaterEnabled = false;
+  @Input() currentVersion = "";
+  @Input() availableUpdate: AvailableUpdateInfo | null = null;
+  @Input() updateStatusMessage = "";
+  @Input() isCheckingForUpdates = false;
+  @Input() isInstallingUpdate = false;
+  @Input() updateDownloadedBytes = 0;
+  @Input() updateContentLength = 0;
+  @Input() updateReadyToRestart = false;
 
   @Output() installModel = new EventEmitter<string>();
   @Output() deleteModel = new EventEmitter<string>();
@@ -49,6 +65,9 @@ export class SettingsComponent {
   @Output() themeModeChange = new EventEmitter<"auto" | "light" | "dark">();
   @Output() clearCache = new EventEmitter<void>();
   @Output() refresh = new EventEmitter<void>();
+  @Output() checkForUpdates = new EventEmitter<void>();
+  @Output() installUpdate = new EventEmitter<void>();
+  @Output() restartToApplyUpdate = new EventEmitter<void>();
   @Output() closeSettings = new EventEmitter<void>();
 
   protected formatBytes(bytes: number): string {
@@ -62,5 +81,13 @@ export class SettingsComponent {
       return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
     }
     return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+  }
+
+  protected updateProgressPercent(): number {
+    if (this.updateContentLength <= 0) {
+      return 0;
+    }
+
+    return Math.max(0, Math.min(100, Math.round((this.updateDownloadedBytes / this.updateContentLength) * 100)));
   }
 }

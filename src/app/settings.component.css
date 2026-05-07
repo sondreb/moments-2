@@ -103,6 +103,10 @@ button:disabled {
   grid-column: span 1;
 }
 
+.update-panel {
+  grid-column: span 1;
+}
+
 .segmented-control {
   display: inline-flex;
   justify-self: start;
@@ -150,6 +154,48 @@ button:disabled {
 .model-row small,
 .database-path {
   color: var(--muted);
+}
+
+.update-status,
+.update-progress {
+  display: grid;
+  gap: 8px;
+}
+
+.update-status strong,
+.update-progress-copy strong {
+  font-size: 15px;
+}
+
+.update-status small,
+.update-progress-copy small,
+.panel-message,
+.update-notes {
+  color: var(--muted);
+}
+
+.update-notes {
+  white-space: pre-wrap;
+}
+
+.update-progress progress {
+  width: 100%;
+  height: 10px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+}
+
+.update-progress progress::-webkit-progress-bar {
+  background: var(--panel);
+}
+
+.update-progress progress::-webkit-progress-value {
+  background: var(--accent);
+}
+
+.update-progress progress::-moz-progress-bar {
+  background: var(--accent);
 }
 
 .database-panel {

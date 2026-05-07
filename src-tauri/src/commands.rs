@@ -7,6 +7,7 @@ use std::{
 };
 
 use exif::{In, Reader as ExifReader, Tag};
+use serde::Serialize;
 use time::OffsetDateTime;
 
 use tauri::{AppHandle, State};
@@ -22,6 +23,13 @@ use crate::{
     },
     services,
 };
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdaterState {
+    enabled: bool,
+    current_version: String,
+}
 
 pub fn hydrate_current_space(state: &LibraryState, app: &AppHandle) -> Result<(), String> {
     let (roots, media_items, metadata, faces) = services::load_library_snapshot(app)?;
@@ -285,6 +293,22 @@ pub fn clear_app_cache(app: AppHandle) -> Result<CacheClearResult, String> {
 #[tauri::command]
 pub fn get_database_stats(app: AppHandle) -> Result<DatabaseStats, String> {
     services::database_stats(&app)
+}
+
+#[tauri::command]
+pub fn get_updater_state(app: AppHandle) -> Result<UpdaterState, String> {
+    let current_version = app.package_info().version.to_string();
+    let enabled = option_env!("MOMENTS_UPDATER_PUBLIC_KEY")
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+        && option_env!("MOMENTS_UPDATER_ENDPOINT")
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty());
+
+    Ok(UpdaterState {
+        enabled,
+        current_version,
+    })
 }
 
 #[tauri::command]
