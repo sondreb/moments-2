@@ -1,18 +1,26 @@
-<main class="app-shell">
-  <aside class="sidebar" aria-label="Library folders">
+<main class="app-shell" [class.dark-theme]="effectiveTheme() === 'dark'" [class.sidebar-hidden]="!sidebarVisible()" [class.inspector-hidden]="!inspectorVisible()">
+  <aside class="sidebar" aria-label="Library folders" *ngIf="sidebarVisible()">
     <div class="brand-block">
-      <div class="brand-mark" aria-hidden="true">M</div>
+      <img class="brand-mark" src="/assets/moments-mark.svg" alt="Moments" />
       <div>
         <h1>Moments</h1>
-        <p>{{ overview().rootCount }} folders · {{ totalMedia() }} media</p>
+        <p>Photos</p>
       </div>
     </div>
+
+    <nav class="primary-nav" aria-label="Moments sections">
+      <button class="nav-row active" type="button"><span aria-hidden="true">▣</span> Library</button>
+      <button class="nav-row" type="button"><span aria-hidden="true">♥</span> Favorites</button>
+      <button class="nav-row" type="button"><span aria-hidden="true">◷</span> Recents</button>
+      <button class="nav-row" type="button"><span aria-hidden="true">⇪</span> Imports</button>
+    </nav>
 
     <button class="primary-action" type="button" (click)="addFolder()" [disabled]="isAddingFolder()">
       <span aria-hidden="true">+</span>
       Add folder
     </button>
 
+    <p class="sidebar-label">Folders</p>
     <nav class="folder-list" aria-label="Folders">
       <button
         *ngFor="let root of roots()"
@@ -33,12 +41,29 @@
 
   <section class="workspace" aria-label="Gallery workspace">
     <header class="toolbar">
-      <div>
-        <p class="eyebrow">Library</p>
-        <h2>{{ selectedRootName() }}</h2>
+      <div class="toolbar-title">
+        <button class="icon-action" type="button" title="Show folders" (click)="sidebarVisible.set(!sidebarVisible())">☰</button>
+        <div>
+          <p class="eyebrow">{{ overview().rootCount }} folders · {{ totalMedia() }} media</p>
+          <h2>{{ selectedRootName() }}</h2>
+        </div>
       </div>
 
       <div class="toolbar-actions">
+        <input class="search-field" type="search" placeholder="Search in Gallery" aria-label="Search in Gallery" />
+        <div class="segmented timeline-tabs" aria-label="Timeline view">
+          <button type="button">Years</button>
+          <button type="button">Months</button>
+          <button class="active" type="button">Days</button>
+          <button type="button">All Photos</button>
+        </div>
+        <div class="segmented" aria-label="Theme">
+          <button type="button" [class.active]="themeMode() === 'auto'" (click)="setThemeMode('auto')">Auto</button>
+          <button type="button" [class.active]="themeMode() === 'light'" (click)="setThemeMode('light')">Light</button>
+          <button type="button" [class.active]="themeMode() === 'dark'" (click)="setThemeMode('dark')">Dark</button>
+        </div>
+        <button class="icon-action" type="button" title="Toggle panels" (click)="toggleChrome()">◫</button>
+        <button class="icon-action" type="button" title="Show inspector" (click)="inspectorVisible.set(!inspectorVisible())">ⓘ</button>
         <button class="ghost-action" type="button" [disabled]="!selectedRoot()" (click)="selectedRoot() && scanRoot(selectedRoot()!)">
           Rescan
         </button>
@@ -59,25 +84,40 @@
         <small>{{ scan.photoCount | number }} photos · {{ scan.videoCount | number }} videos · {{ scan.skippedCount | number }} other files skipped</small>
       </div>
 
-      <div class="media-overview" *ngIf="selectedRoot() as root">
-        <div class="media-stat">
-          <strong>{{ root.mediaCount | number }}</strong>
-          <span>Media</span>
-        </div>
-        <div class="media-stat">
-          <strong>{{ root.photoCount | number }}</strong>
-          <span>Photos</span>
-        </div>
-        <div class="media-stat">
-          <strong>{{ root.videoCount | number }}</strong>
-          <span>Videos</span>
-        </div>
-      </div>
-
       <div class="gallery-loading" *ngIf="isLoadingMedia()">Loading media...</div>
 
+      <section class="viewer" *ngIf="selectedMedia() as item">
+        <div class="viewer-toolbar">
+          <div class="viewer-title">
+            <strong>{{ item.name }}</strong>
+            <span>{{ item.mediaType }} · {{ selectedMediaIndex() + 1 }} / {{ mediaItems().length }}</span>
+          </div>
+          <div class="viewer-actions">
+            <button class="icon-action" type="button" title="Previous" [disabled]="selectedMediaIndex() <= 0" (click)="previousMedia()">‹</button>
+            <button class="icon-action" type="button" title="Next" [disabled]="selectedMediaIndex() >= mediaItems().length - 1" (click)="nextMedia()">›</button>
+            <button class="icon-action" type="button" title="Zoom out" [disabled]="item.mediaType !== 'photo'" (click)="zoomOut()">−</button>
+            <button class="zoom-value" type="button" title="Reset zoom" [disabled]="item.mediaType !== 'photo'" (click)="resetZoom()">{{ zoom() }}%</button>
+            <button class="icon-action" type="button" title="Zoom in" [disabled]="item.mediaType !== 'photo'" (click)="zoomIn()">+</button>
+            <button class="ghost-action" type="button" (click)="openNative(item)">Open native</button>
+          </div>
+        </div>
+
+        <div class="viewer-surface" [class.video-surface]="item.mediaType === 'video'">
+          <img
+            *ngIf="item.mediaType === 'photo'"
+            [src]="mediaUrl(item)"
+            [alt]="item.name"
+            title="Selected photo"
+            [style.width]="zoomedImageWidth()"
+            [style.max-width]="zoomedImageMaxWidth()"
+            [style.max-height]="zoomedImageMaxHeight()"
+          />
+          <video *ngIf="item.mediaType === 'video'" [src]="mediaUrl(item)" controls autoplay></video>
+        </div>
+      </section>
+
       <div class="media-grid" *ngIf="mediaItems().length > 0">
-        <figure class="media-tile" *ngFor="let item of mediaItems()">
+        <figure class="media-tile" *ngFor="let item of mediaItems()" [class.active]="isSelectedMedia(item)" (click)="selectMedia(item)" (dblclick)="openNative(item)">
           <img *ngIf="item.mediaType === 'photo'" [src]="mediaUrl(item)" [alt]="item.name" title="Photo thumbnail" loading="lazy" />
           <video *ngIf="item.mediaType === 'video'" [src]="mediaUrl(item)" preload="metadata" muted></video>
           <figcaption>
@@ -89,13 +129,22 @@
     </section>
   </section>
 
-  <aside class="inspector" aria-label="Inspector">
-    <p class="eyebrow">Inspector</p>
-    <h2>{{ selectedRootName() === "No folder selected" ? "Library" : selectedRootName() }}</h2>
+  <aside class="inspector" aria-label="Inspector" *ngIf="inspectorVisible()">
+    <header class="inspector-header">
+      <div>
+        <p class="eyebrow">Inspector</p>
+        <h2>{{ selectedMediaName() || (selectedRootName() === "No folder selected" ? "Library" : selectedRootName()) }}</h2>
+      </div>
+      <button class="icon-action close-button" type="button" title="Close inspector" aria-label="Close inspector" (click)="closeInspector()">×</button>
+    </header>
     <dl>
+      <div *ngIf="selectedMedia() as item">
+        <dt>Selected media</dt>
+        <dd>{{ item.mediaType }}</dd>
+      </div>
       <div>
         <dt>Path</dt>
-        <dd>{{ selectedRootPath() }}</dd>
+        <dd>{{ selectedMediaPath() || selectedRootPath() }}</dd>
       </div>
       <div>
         <dt>Status</dt>

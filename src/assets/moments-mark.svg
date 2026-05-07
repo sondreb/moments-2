@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Moments">
+  <defs>
+    <linearGradient id="sky" x1="20" y1="12" x2="112" y2="116" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#24415f"/>
+      <stop offset="0.54" stop-color="#3f6580"/>
+      <stop offset="1" stop-color="#f2bf42"/>
+    </linearGradient>
+    <linearGradient id="lens" x1="38" y1="35" x2="92" y2="96" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f7d56b"/>
+      <stop offset="1" stop-color="#2f855a"/>
+    </linearGradient>
+  </defs>
+  <rect x="10" y="10" width="108" height="108" rx="24" fill="#101923"/>
+  <rect x="18" y="18" width="92" height="92" rx="18" fill="url(#sky)"/>
+  <path d="M29 83 51 58l18 18 12-15 19 22v16H29Z" fill="#fff8e6" opacity="0.92"/>
+  <circle cx="84" cy="42" r="11" fill="#f8d15c"/>
+  <circle cx="64" cy="64" r="23" fill="none" stroke="url(#lens)" stroke-width="8" opacity="0.96"/>
+  <circle cx="64" cy="64" r="8" fill="#101923" opacity="0.72"/>
+</svg>
