@@ -6,7 +6,8 @@
     "start": "ng serve",
     "build": "ng build",
     "watch": "ng build --watch --configuration development",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "version:patch": "node ./scripts/version-patch.mjs"
   },
   "private": true,
   "dependencies": {

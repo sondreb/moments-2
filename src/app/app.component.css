@@ -817,7 +817,7 @@ dd {
 
 .viewer-surface {
   min-height: 0;
-  height: clamp(360px, 64vh, 760px);
+  height: min(64vh, 760px);
   overflow: hidden;
   display: flex;
   align-items: center;

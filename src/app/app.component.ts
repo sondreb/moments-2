@@ -401,6 +401,7 @@ export class AppComponent implements OnInit {
   protected readonly isScanningFeatures = computed(() => this.currentAnalysisTask() === "features");
   protected readonly duplicateGroupCount = computed(() => this.duplicateGroups().length);
   private panStart: { pointerId: number; x: number; y: number; panX: number; panY: number } | null = null;
+  private viewerSurfaceSyncFrame: number | null = null;
 
   async ngOnInit(): Promise<void> {
     const savedTheme = localStorage.getItem("moments.theme");
@@ -501,7 +502,7 @@ export class AppComponent implements OnInit {
 
   @HostListener("window:resize")
   protected handleWindowResize(): void {
-    this.queueViewerSurfaceSync();
+    this.queueViewerSurfaceSync(16);
   }
 
   protected openSpaceMenu(event: MouseEvent): void {
@@ -670,7 +671,7 @@ export class AppComponent implements OnInit {
       await this.pendingUpdate.downloadAndInstall((event: DownloadEvent) => {
         switch (event.event) {
           case "Started":
-            this.updateContentLength.set(event.data.contentLength);
+            this.updateContentLength.set(event.data.contentLength ?? 0);
             this.updateDownloadedBytes.set(0);
             break;
           case "Progress":
@@ -1688,12 +1689,23 @@ export class AppComponent implements OnInit {
     });
   }
 
-  private queueViewerSurfaceSync(): void {
-    this.syncViewerSurfaceSize();
-    requestAnimationFrame(() => {
+  private queueViewerSurfaceSync(frames = 3): void {
+    if (this.viewerSurfaceSyncFrame !== null) {
+      cancelAnimationFrame(this.viewerSurfaceSyncFrame);
+      this.viewerSurfaceSyncFrame = null;
+    }
+
+    const tick = (remaining: number) => {
       this.syncViewerSurfaceSize();
-      requestAnimationFrame(() => this.syncViewerSurfaceSize());
-    });
+      if (remaining <= 1) {
+        this.viewerSurfaceSyncFrame = null;
+        return;
+      }
+
+      this.viewerSurfaceSyncFrame = requestAnimationFrame(() => tick(remaining - 1));
+    };
+
+    tick(Math.max(1, frames));
   }
 
   private syncViewerSurfaceSize(): void {
@@ -1703,7 +1715,8 @@ export class AppComponent implements OnInit {
       return;
     }
 
-    this.viewerSurfaceSize.set({ width: surface.clientWidth, height: surface.clientHeight });
+    const rect = surface.getBoundingClientRect();
+    this.viewerSurfaceSize.set({ width: rect.width, height: rect.height });
   }
 
   private revealDetailToolbar(scheduleHide = true): void {

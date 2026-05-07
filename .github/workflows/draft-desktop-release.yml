@@ -1,22 +1,16 @@
 name: Draft Desktop Release
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
-    inputs:
-      tag:
-        description: Release tag to create, for example v0.1.0
-        required: true
-        type: string
-      release_name:
-        description: Optional release name override
-        required: false
-        type: string
 
 permissions:
   contents: write
 
 concurrency:
-  group: draft-release-${{ inputs.tag }}
+  group: draft-release-main
   cancel-in-progress: false
 
 jobs:
@@ -82,6 +76,31 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Generate release updater config
+        shell: pwsh
+        env:
+          MOMENTS_UPDATER_PUBLIC_KEY: ${{ vars.MOMENTS_UPDATER_PUBLIC_KEY }}
+          MOMENTS_UPDATER_ENDPOINT: https://github.com/${{ github.repository }}/releases/latest/download/latest.json
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:MOMENTS_UPDATER_PUBLIC_KEY)) {
+            throw "Repository variable MOMENTS_UPDATER_PUBLIC_KEY must be set for signed updater builds."
+          }
+
+          $config = Get-Content "src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json
+          if (-not $config.plugins) {
+            $config | Add-Member -NotePropertyName plugins -NotePropertyValue ([pscustomobject]@{})
+          }
+
+          $config.plugins | Add-Member -Force -NotePropertyName updater -NotePropertyValue ([pscustomobject]@{
+            pubkey = $env:MOMENTS_UPDATER_PUBLIC_KEY
+            endpoints = @($env:MOMENTS_UPDATER_ENDPOINT)
+            windows = [pscustomobject]@{
+              installMode = "passive"
+            }
+          })
+
+          $config | ConvertTo-Json -Depth 100 | Set-Content "src-tauri/tauri.release.conf.json"
+
       - name: Build Tauri app and upload release assets
         uses: tauri-apps/tauri-action@v0
         env:
@@ -91,14 +110,15 @@ jobs:
           MOMENTS_UPDATER_PUBLIC_KEY: ${{ vars.MOMENTS_UPDATER_PUBLIC_KEY }}
           MOMENTS_UPDATER_ENDPOINT: https://github.com/${{ github.repository }}/releases/latest/download/latest.json
         with:
-          tagName: ${{ inputs.tag }}
-          releaseName: ${{ inputs.release_name != '' && inputs.release_name || format('Moments {0}', inputs.tag) }}
+          tagName: v__VERSION__
+          releaseName: Moments v__VERSION__
           releaseBody: |
-            Automated desktop build for ${{ inputs.tag }}.
+            Automated desktop build from `${{ github.sha }}`.
 
             This release is created as a draft so it can be reviewed and published manually.
             The assets include signed updater metadata for in-app updates after the draft is published.
           releaseDraft: true
           prerelease: false
           uploadUpdaterJson: true
-          args: --target ${{ matrix.target }}
+          updaterJsonPreferNsis: true
+          args: --config src-tauri/tauri.release.conf.json --target ${{ matrix.target }}
