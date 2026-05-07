@@ -214,10 +214,9 @@ export class AppComponent implements OnInit {
       return;
     }
 
-    const updateSurfaceSize = () => this.viewerSurfaceSize.set({ width: surface.clientWidth, height: surface.clientHeight });
-    updateSurfaceSize();
+    this.syncViewerSurfaceSize();
 
-    const observer = new ResizeObserver(() => updateSurfaceSize());
+    const observer = new ResizeObserver(() => this.syncViewerSurfaceSize());
     observer.observe(surface);
     onCleanup(() => observer.disconnect());
   });
@@ -421,6 +420,12 @@ export class AppComponent implements OnInit {
     if (event.key === "Escape") {
       this.mediaContextMenu.set(null);
     }
+  }
+
+  @HostListener("window:resize")
+  protected handleWindowResize(): void {
+    this.syncViewerSurfaceSize();
+    requestAnimationFrame(() => this.syncViewerSurfaceSize());
   }
 
   protected async addFolder(): Promise<void> {
@@ -1348,6 +1353,16 @@ export class AppComponent implements OnInit {
         inline: "center",
       });
     });
+  }
+
+  private syncViewerSurfaceSize(): void {
+    const surface = this.viewerSurfaceRef()?.nativeElement;
+    if (!surface) {
+      this.viewerSurfaceSize.set(null);
+      return;
+    }
+
+    this.viewerSurfaceSize.set({ width: surface.clientWidth, height: surface.clientHeight });
   }
 
   private revealDetailToolbar(scheduleHide = true): void {
