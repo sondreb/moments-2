@@ -69,10 +69,13 @@
         <button class="ghost-action" type="button" [disabled]="!selectedRoot()" (click)="selectedRoot() && scanRoot(selectedRoot()!)">
           Rescan
         </button>
+        <button class="ghost-action" type="button" [disabled]="!selectedRoot() || isAnalyzingFolder()" (click)="analyzeRootFaces()">Scan faces</button>
+        <button class="ghost-action" type="button" [disabled]="!selectedRoot() || isAnalyzingFolder()" (click)="classifyRootImages()">Scan features</button>
       </div>
     </header>
 
     <p class="error-banner" *ngIf="errorMessage()">{{ errorMessage() }}</p>
+    <p class="analysis-banner" *ngIf="analysisMessage()">{{ analysisMessage() }}</p>
 
     <section class="gallery-stage" aria-label="Media">
       <app-settings
@@ -118,7 +121,7 @@
             <span>{{ item.mediaType }} · {{ selectedMediaIndex() + 1 }} / {{ mediaItems().length }}</span>
           </div>
           <div class="viewer-actions">
-            <button class="icon-action favorite-action" type="button" title="Favorite" [class.active]="selectedMediaMetadata()?.favorite" (click)="toggleFavorite(item)">♥</button>
+            <button class="icon-action favorite-action" type="button" title="Favorite" [class.active]="selectedMediaMetadata()?.favorite" [attr.aria-pressed]="selectedMediaMetadata()?.favorite" (click)="toggleFavorite(item)">♥</button>
             <button class="icon-action" type="button" title="Previous" [disabled]="selectedMediaIndex() <= 0" (click)="previousMedia()">‹</button>
             <button class="icon-action" type="button" title="Next" [disabled]="selectedMediaIndex() >= mediaItems().length - 1" (click)="nextMedia()">›</button>
             <button class="icon-action" type="button" title="Zoom out" [disabled]="item.mediaType !== 'photo'" (click)="zoomOut()">−</button>

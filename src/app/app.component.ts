@@ -56,6 +56,17 @@ interface FaceAnalysisResult {
   faces: FaceCandidate[];
 }
 
+interface FolderAnalysisResult {
+  rootId: string;
+  task: string;
+  modelId: string;
+  processedMedia: number;
+  status: "ready" | "modelMissing";
+  message: string;
+  faces: FaceCandidate[];
+  metadata: MediaMetadata[];
+}
+
 interface LibraryOverview {
   rootCount: number;
   photoCount: number;
@@ -94,6 +105,7 @@ export class AppComponent implements OnInit {
   protected readonly isAnalyzingFolder = signal(false);
   protected readonly tagDraft = signal("");
   protected readonly settingsMessage = signal("");
+  protected readonly analysisMessage = signal("");
   protected readonly aiModels = signal<AiModelInfo[]>([]);
   protected readonly databaseStats = signal<DatabaseStats | null>(null);
   protected readonly sidebarVisible = signal(true);
@@ -393,6 +405,7 @@ export class AppComponent implements OnInit {
         favorite: !current.favorite,
       });
       this.upsertMetadata(metadata);
+      this.analysisMessage.set(metadata.favorite ? "Added to Favorites." : "Removed from Favorites.");
     } catch (error) {
       this.errorMessage.set(this.describeError(error));
     }
@@ -584,10 +597,33 @@ export class AppComponent implements OnInit {
 
     this.isAnalyzingFolder.set(true);
     try {
-      const result = await invoke<{ message: string }>(command, { rootId: root.id });
+      const result = await invoke<FolderAnalysisResult>(command, { rootId: root.id });
+      for (const metadata of result.metadata) {
+        this.upsertMetadata(metadata);
+      }
+      if (result.faces.length > 0) {
+        this.faceAnalysisById.update((analysis) => {
+          const next = { ...analysis };
+          for (const face of result.faces) {
+            const current = next[face.mediaId] ?? {
+              mediaId: face.mediaId,
+              status: "ready" as const,
+              message: "Face candidates found by folder scan.",
+              faces: [],
+            };
+            next[face.mediaId] = {
+              ...current,
+              faces: [...current.faces.filter((candidate) => candidate.id !== face.id), face],
+            };
+          }
+          return next;
+        });
+      }
       this.settingsMessage.set(result.message);
+      this.analysisMessage.set(result.message);
     } catch (error) {
       this.settingsMessage.set(this.describeError(error));
+      this.analysisMessage.set(this.describeError(error));
     } finally {
       this.isAnalyzingFolder.set(false);
       await this.refreshSettings();

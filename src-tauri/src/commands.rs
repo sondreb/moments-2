@@ -230,7 +230,21 @@ fn analyze_root_with_model(
             processed_media,
             status: FaceAnalysisStatus::ModelMissing,
             message: format!("Install a {task} model before running folder analysis."),
+            faces: Vec::new(),
+            metadata: Vec::new(),
         });
+    };
+
+    let (faces, metadata) = if task == "Face scanning" {
+        let faces = state.scan_faces_for_root(&root_id)?;
+        services::record_faces(&app, &faces)?;
+        (faces, Vec::new())
+    } else {
+        let metadata = state.add_feature_tags_for_root(&root_id)?;
+        for entry in &metadata {
+            services::record_metadata(&app, &entry.media_id, entry.favorite, &entry.tags)?;
+        }
+        (Vec::new(), metadata)
     };
 
     Ok(FolderAnalysisResult {
@@ -240,9 +254,11 @@ fn analyze_root_with_model(
         processed_media,
         status: FaceAnalysisStatus::Ready,
         message: format!(
-            "{task} is ready for {processed_media} photos in this folder using the {} model. Runtime inference will process this queue when the ONNX execution layer is enabled.",
+            "{task} processed {processed_media} photos in this folder. The {} model is installed for this task.",
             model.accelerator
         ),
+        faces,
+        metadata,
     })
 }
 

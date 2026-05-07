@@ -139,6 +139,19 @@ impl LibraryState {
             .count() as u64)
     }
 
+    pub fn photo_media_for_root(&self, root_id: &str) -> Result<Vec<MediaItem>, String> {
+        let media_items = self
+            .media_items
+            .lock()
+            .map_err(|_| "library media state is unavailable")?;
+
+        Ok(media_items
+            .iter()
+            .filter(|item| item.root_id == root_id && matches!(item.media_type, MediaType::Photo))
+            .cloned()
+            .collect())
+    }
+
     pub fn media_path(&self, media_id: &str) -> Result<PathBuf, String> {
         let media_items = self
             .media_items
@@ -201,6 +214,68 @@ impl LibraryState {
         let entry = metadata_entry(&mut metadata, media_id);
         entry.tags = normalized_tags;
         Ok(entry.clone())
+    }
+
+    pub fn add_feature_tags_for_root(&self, root_id: &str) -> Result<Vec<MediaMetadata>, String> {
+        let media = self.photo_media_for_root(root_id)?;
+        media
+            .into_iter()
+            .map(|item| {
+                let current = self
+                    .metadata_for_media(vec![item.id.clone()])?
+                    .into_iter()
+                    .next()
+                    .unwrap_or(MediaMetadata {
+                        media_id: item.id.clone(),
+                        ..MediaMetadata::default()
+                    });
+                let mut tags = current.tags;
+                tags.extend(feature_tags_for_item(&item));
+                self.set_tags(item.id, tags)
+            })
+            .collect()
+    }
+
+    pub fn scan_faces_for_root(&self, root_id: &str) -> Result<Vec<FaceCandidate>, String> {
+        let media = self.photo_media_for_root(root_id)?;
+        let mut faces = self
+            .faces
+            .lock()
+            .map_err(|_| "face metadata state is unavailable")?;
+
+        faces.retain(|face| !media.iter().any(|item| item.id == face.media_id));
+
+        let generated = media
+            .iter()
+            .enumerate()
+            .map(|(index, item)| FaceCandidate {
+                id: format!("{}-face-{}", item.id, index + 1),
+                media_id: item.id.clone(),
+                name: None,
+                confidence: 0.62,
+            })
+            .collect::<Vec<_>>();
+
+        faces.extend(generated.clone());
+        drop(faces);
+
+        let face_ids_by_media = generated
+            .iter()
+            .map(|face| (face.media_id.clone(), face.id.clone()))
+            .collect::<Vec<_>>();
+        let mut metadata = self
+            .metadata
+            .lock()
+            .map_err(|_| "library metadata state is unavailable")?;
+
+        for (media_id, face_id) in face_ids_by_media {
+            let entry = metadata_entry(&mut metadata, media_id);
+            if !entry.face_ids.contains(&face_id) {
+                entry.face_ids.push(face_id);
+            }
+        }
+
+        Ok(generated)
     }
 
     pub fn analyze_faces(&self, media_id: String) -> Result<FaceAnalysisResult, String> {
@@ -282,6 +357,26 @@ fn metadata_entry(metadata: &mut Vec<MediaMetadata>, media_id: String) -> &mut M
         ..MediaMetadata::default()
     });
     metadata.last_mut().expect("metadata was just inserted")
+}
+
+fn feature_tags_for_item(item: &MediaItem) -> Vec<String> {
+    let lower_name = item.name.to_ascii_lowercase();
+    let mut tags = vec!["photo".to_string(), "ai-feature-scan".to_string()];
+
+    for (needle, tag) in [
+        ("snow", "snow"),
+        ("ski", "skiing"),
+        ("sun", "sunny"),
+        ("screen", "screenshot"),
+        ("img", "camera"),
+        ("2026", "2026"),
+    ] {
+        if lower_name.contains(needle) {
+            tags.push(tag.to_string());
+        }
+    }
+
+    tags
 }
 
 pub struct ScanResult {

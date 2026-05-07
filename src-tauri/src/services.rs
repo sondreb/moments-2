@@ -8,7 +8,8 @@ use rusqlite::{params, Connection};
 use tauri::{AppHandle, Manager};
 
 use crate::models::{
-    AiModelInfo, CacheClearResult, DatabaseStats, ModelDeleteResult, ModelInstallResult,
+    AiModelInfo, CacheClearResult, DatabaseStats, FaceCandidate, ModelDeleteResult,
+    ModelInstallResult,
 };
 
 struct ModelDefinition {
@@ -260,6 +261,28 @@ pub fn record_metadata(
     transaction
         .commit()
         .map_err(|error| format!("failed to commit metadata database transaction: {error}"))?;
+    Ok(())
+}
+
+pub fn record_faces(app: &AppHandle, faces: &[FaceCandidate]) -> Result<(), String> {
+    let mut connection = open_database(app)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| format!("failed to start face database transaction: {error}"))?;
+
+    for face in faces {
+        transaction
+            .execute(
+                "insert into face_candidates (id, media_id, name, confidence) values (?1, ?2, ?3, ?4)
+                 on conflict(id) do update set name = excluded.name, confidence = excluded.confidence",
+                params![&face.id, &face.media_id, &face.name, face.confidence],
+            )
+            .map_err(|error| format!("failed to record face candidate: {error}"))?;
+    }
+
+    transaction
+        .commit()
+        .map_err(|error| format!("failed to commit face database transaction: {error}"))?;
     Ok(())
 }
 

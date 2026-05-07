@@ -128,6 +128,8 @@ pub struct FolderAnalysisResult {
     pub processed_media: u64,
     pub status: FaceAnalysisStatus,
     pub message: String,
+    pub faces: Vec<FaceCandidate>,
+    pub metadata: Vec<MediaMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
