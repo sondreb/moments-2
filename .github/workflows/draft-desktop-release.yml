@@ -79,7 +79,7 @@ jobs:
       - name: Generate release updater config
         shell: pwsh
         env:
-          MOMENTS_UPDATER_PUBLIC_KEY: ${{ vars.MOMENTS_UPDATER_PUBLIC_KEY }}
+          MOMENTS_UPDATER_PUBLIC_KEY: ${{ vars[format('{0}', 'MOMENTS_UPDATER_PUBLIC_KEY')] }}
           MOMENTS_UPDATER_ENDPOINT: https://github.com/${{ github.repository }}/releases/latest/download/latest.json
         run: |
           if ([string]::IsNullOrWhiteSpace($env:MOMENTS_UPDATER_PUBLIC_KEY)) {
@@ -102,12 +102,12 @@ jobs:
           $config | ConvertTo-Json -Depth 100 | Set-Content "src-tauri/tauri.release.conf.json"
 
       - name: Build Tauri app and upload release assets
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@action-v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          MOMENTS_UPDATER_PUBLIC_KEY: ${{ vars.MOMENTS_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets[format('{0}', 'TAURI_SIGNING_PRIVATE_KEY')] }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets[format('{0}', 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD')] }}
+          MOMENTS_UPDATER_PUBLIC_KEY: ${{ vars[format('{0}', 'MOMENTS_UPDATER_PUBLIC_KEY')] }}
           MOMENTS_UPDATER_ENDPOINT: https://github.com/${{ github.repository }}/releases/latest/download/latest.json
         with:
           tagName: v__VERSION__
@@ -119,6 +119,6 @@ jobs:
             The assets include signed updater metadata for in-app updates after the draft is published.
           releaseDraft: true
           prerelease: false
-          uploadUpdaterJson: true
+          includeUpdaterJson: true
           updaterJsonPreferNsis: true
           args: --config src-tauri/tauri.release.conf.json --target ${{ matrix.target }}

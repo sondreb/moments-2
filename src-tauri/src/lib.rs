@@ -13,7 +13,6 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let state = app.state::<library::LibraryState>();
             let _ = commands::hydrate_current_space(state.inner(), &app.handle());

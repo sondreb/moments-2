@@ -24,6 +24,24 @@ Build the Angular frontend only:
 npm run build
 ```
 
+Increase the patch version across the desktop app metadata:
+
+```bash
+npm run version:patch
+```
+
+## Releases
+
+Pushing to `main` triggers the GitHub Actions desktop release workflow. It builds the Tauri app for macOS, Linux, and Windows x64/ARM64, uploads signed updater artifacts, and creates or updates a GitHub draft release using the current app version.
+
+Release builds require these GitHub repository settings:
+
+- `TAURI_SIGNING_PRIVATE_KEY` secret
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secret, if your signing key uses one
+- `MOMENTS_UPDATER_PUBLIC_KEY` repository variable
+
+Published releases expose in-app update checks, download progress, and install support in the desktop Settings view.
+
 ## Planning
 
 - [docs/PLAN.md](docs/PLAN.md)
