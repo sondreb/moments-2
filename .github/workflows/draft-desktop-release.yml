@@ -14,31 +14,94 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  prepare-release:
+    name: Prepare draft release metadata
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.release-metadata.outputs.version }}
+      release_tag: ${{ steps.release-metadata.outputs.release_tag }}
+      release_name: ${{ steps.release-metadata.outputs.release_name }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Determine release metadata
+        id: release-metadata
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "package.json version '$VERSION' is not a supported semver value" >&2
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "release_tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "release_name=Moments v$VERSION" >> "$GITHUB_OUTPUT"
+
+  build-desktop:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
+    needs: prepare-release
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: Linux x64
+            artifact_name: moments-linux-x64
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+            bundle_glob: |
+              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage.sig
+              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
+              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/rpm/*.rpm
           - name: Linux ARM64
+            artifact_name: moments-linux-arm64
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            bundle_glob: |
+              src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+              src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/appimage/*.AppImage.sig
+              src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/deb/*.deb
+              src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/rpm/*.rpm
           - name: Windows x64
+            artifact_name: moments-windows-x64
             runner: windows-2022
             target: x86_64-pc-windows-msvc
+            bundle_glob: |
+              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe.sig
           - name: Windows ARM64
+            artifact_name: moments-windows-arm64
             runner: windows-11-arm
             target: aarch64-pc-windows-msvc
+            bundle_glob: |
+              src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe
+              src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe.sig
           - name: macOS x64
+            artifact_name: moments-macos-x64
             runner: macos-13
             target: x86_64-apple-darwin
+            bundle_glob: |
+              src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+              src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app.tar.gz
+              src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
           - name: macOS ARM64
+            artifact_name: moments-macos-arm64
             runner: macos-14
             target: aarch64-apple-darwin
+            bundle_glob: |
+              src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+              src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
+              src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
 
     steps:
       - name: Check out repository
@@ -51,7 +114,7 @@ jobs:
           cache: npm
 
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
@@ -79,7 +142,7 @@ jobs:
         shell: pwsh
         env:
           MOMENTS_UPDATER_PUBLIC_KEY: ${{ vars[format('{0}', 'MOMENTS_UPDATER_PUBLIC_KEY')] }}
-          MOMENTS_UPDATER_ENDPOINT: https://github.com/${{ github.repository }}/releases/latest/download/latest.json
+          MOMENTS_UPDATER_ENDPOINT: https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare-release.outputs.release_tag }}/latest.json
         run: |
           if ([string]::IsNullOrWhiteSpace($env:MOMENTS_UPDATER_PUBLIC_KEY)) {
             throw "Repository variable MOMENTS_UPDATER_PUBLIC_KEY must be set for signed updater builds."
@@ -100,24 +163,216 @@ jobs:
 
           $config | ConvertTo-Json -Depth 100 | Set-Content "src-tauri/tauri.release.conf.json"
 
-      - name: Build Tauri app and upload release assets
-        uses: tauri-apps/tauri-action@action-v0.6.2
+      - name: Validate updater signing secrets
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets[format('{0}', 'TAURI_SIGNING_PRIVATE_KEY')] }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo 'Missing required secret: TAURI_SIGNING_PRIVATE_KEY' >&2
+            exit 1
+          fi
+
+      - name: Build desktop installers
+        env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets[format('{0}', 'TAURI_SIGNING_PRIVATE_KEY')] }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets[format('{0}', 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD')] }}
           MOMENTS_UPDATER_PUBLIC_KEY: ${{ vars[format('{0}', 'MOMENTS_UPDATER_PUBLIC_KEY')] }}
-          MOMENTS_UPDATER_ENDPOINT: https://github.com/${{ github.repository }}/releases/latest/download/latest.json
-        with:
-          tagName: v__VERSION__
-          releaseName: Moments v__VERSION__
-          releaseBody: |
-            Automated desktop build from `${{ github.sha }}`.
+          MOMENTS_UPDATER_ENDPOINT: https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare-release.outputs.release_tag }}/latest.json
+        run: npm run tauri build -- --config src-tauri/tauri.release.conf.json --target ${{ matrix.target }}
 
-            This release is created as a draft so it can be reviewed and published manually.
-            The assets include signed updater metadata for in-app updates after the draft is published.
-          releaseDraft: true
-          prerelease: false
-          includeUpdaterJson: true
-          updaterJsonPreferNsis: true
-          args: --config src-tauri/tauri.release.conf.json --target ${{ matrix.target }}
+      - name: Upload platform bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.bundle_glob }}
+          if-no-files-found: error
+
+  publish-draft-release:
+    name: Publish draft release assets
+    runs-on: ubuntu-24.04
+    needs:
+      - prepare-release
+      - build-desktop
+    if: >-
+      always() &&
+      needs.prepare-release.result == 'success' &&
+      needs.build-desktop.result == 'success'
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: moments-*
+          path: release-assets
+
+      - name: Prepare release upload assets
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          rm -rf release-upload
+          mkdir -p release-upload
+          updater_entries_file=$(mktemp)
+
+          copy_release_asset() {
+            local source_file="$1"
+            local target_name="$2"
+
+            cp "$source_file" "release-upload/$target_name"
+          }
+
+          append_updater_entry() {
+            local platform="$1"
+            local kind="$2"
+            local file_name="$3"
+
+            printf '%s|%s|%s\n' "$platform" "$kind" "$file_name" >> "$updater_entries_file"
+          }
+
+          while IFS= read -r source_file; do
+            relative_path="${source_file#release-assets/}"
+            artifact_name="${relative_path%%/*}"
+            nested_path="${relative_path#*/}"
+            target_name=$(basename "$nested_path")
+
+            case "$artifact_name:$target_name" in
+              moments-linux-x64:*.AppImage)
+                append_updater_entry 'linux-x86_64' file "$target_name"
+                ;;
+              moments-linux-x64:*.AppImage.sig)
+                append_updater_entry 'linux-x86_64' signature "$target_name"
+                ;;
+              moments-linux-arm64:*.AppImage)
+                append_updater_entry 'linux-aarch64' file "$target_name"
+                ;;
+              moments-linux-arm64:*.AppImage.sig)
+                append_updater_entry 'linux-aarch64' signature "$target_name"
+                ;;
+              moments-windows-x64:*.exe)
+                append_updater_entry 'windows-x86_64' file "$target_name"
+                ;;
+              moments-windows-x64:*.exe.sig)
+                append_updater_entry 'windows-x86_64' signature "$target_name"
+                ;;
+              moments-windows-arm64:*.exe)
+                append_updater_entry 'windows-aarch64' file "$target_name"
+                ;;
+              moments-windows-arm64:*.exe.sig)
+                append_updater_entry 'windows-aarch64' signature "$target_name"
+                ;;
+              moments-macos-x64:*.app.tar.gz)
+                append_updater_entry 'darwin-x86_64' file "$target_name"
+                ;;
+              moments-macos-x64:*.app.tar.gz.sig)
+                append_updater_entry 'darwin-x86_64' signature "$target_name"
+                ;;
+              moments-macos-arm64:*.app.tar.gz)
+                append_updater_entry 'darwin-aarch64' file "$target_name"
+                ;;
+              moments-macos-arm64:*.app.tar.gz.sig)
+                append_updater_entry 'darwin-aarch64' signature "$target_name"
+                ;;
+            esac
+
+            copy_release_asset "$source_file" "$target_name"
+          done < <(find release-assets -type f | sort)
+
+          VERSION="$VERSION" RELEASE_TAG="$RELEASE_TAG" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" UPDATER_ENTRIES_FILE="$updater_entries_file" python3 - <<'PY'
+          import json
+          import os
+          from collections import defaultdict
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          version = os.environ['VERSION']
+          release_tag = os.environ['RELEASE_TAG']
+          repo = os.environ['GITHUB_REPOSITORY']
+          base_url = f"https://github.com/{repo}/releases/download/{release_tag}"
+          entries_path = Path(os.environ['UPDATER_ENTRIES_FILE'])
+          upload_dir = Path('release-upload')
+
+          platforms = defaultdict(dict)
+          for raw_line in entries_path.read_text(encoding='utf-8').splitlines():
+              if not raw_line:
+                  continue
+              platform, kind, file_name = raw_line.split('|', 2)
+              if kind == 'file':
+                  platforms[platform]['url'] = f"{base_url}/{file_name}"
+              else:
+                  platforms[platform]['signature'] = (upload_dir / file_name).read_text(encoding='utf-8').strip()
+
+          required_platforms = [
+              'linux-x86_64',
+              'linux-aarch64',
+              'windows-x86_64',
+              'windows-aarch64',
+              'darwin-x86_64',
+              'darwin-aarch64',
+          ]
+
+          missing = [platform for platform in required_platforms if set(platforms[platform]) != {'url', 'signature'}]
+          if missing:
+              raise SystemExit(f"Missing updater assets for platforms: {', '.join(missing)}")
+
+          manifest = {
+              'version': version,
+              'pub_date': datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z'),
+              'platforms': {platform: platforms[platform] for platform in required_platforms},
+          }
+
+          (upload_dir / 'latest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+          PY
+
+          find release-upload -maxdepth 1 -type f | sort
+
+      - name: Publish draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+          RELEASE_NAME: ${{ needs.prepare-release.outputs.release_name }}
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+          TARGET_COMMITISH: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          release_body=$(cat <<EOF
+          Draft build assets for Moments v${RELEASE_VERSION}.
+
+          This draft is updated by the desktop release workflow on each run so the generated artifacts can be reviewed and published when ready.
+          EOF
+          )
+
+          if gh release view "$RELEASE_TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
+            release_id=$(gh release view "$RELEASE_TAG" --repo "$GH_REPO" --json databaseId --jq '.databaseId')
+
+            gh api \
+              --method PATCH \
+              -H 'Accept: application/vnd.github+json' \
+              "/repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+              -f tag_name="$RELEASE_TAG" \
+              -f target_commitish="$TARGET_COMMITISH" \
+              -f name="$RELEASE_NAME" \
+              -F draft=true \
+              -F prerelease=false \
+              -f body="$release_body" >/dev/null
+          else
+            gh api \
+              --method POST \
+              -H 'Accept: application/vnd.github+json' \
+              "/repos/${GITHUB_REPOSITORY}/releases" \
+              -f tag_name="$RELEASE_TAG" \
+              -f target_commitish="$TARGET_COMMITISH" \
+              -f name="$RELEASE_NAME" \
+              -F draft=true \
+              -F prerelease=false \
+              -f body="$release_body" >/dev/null
+          fi
+
+          gh release upload "$RELEASE_TAG" release-upload/* --repo "$GH_REPO" --clobber
