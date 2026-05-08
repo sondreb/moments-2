@@ -25,6 +25,26 @@
   </div>
 
   <aside class="sidebar" aria-label="Library folders" *ngIf="sidebarVisible() && !isDetailOpen()">
+    <section class="sidebar-space-stage">
+      <div class="sidebar-space-header">
+        <p class="sidebar-label sidebar-label-top">Spaces</p>
+        <button class="ghost-action compact" type="button" (click)="createSpace()">New</button>
+      </div>
+      <button class="space-hero" type="button" (click)="openSpaceMenu($event)">
+        <span class="space-hero-mark" aria-hidden="true">◌</span>
+        <span class="space-hero-copy">
+          <strong>{{ currentSpaceName() }}</strong>
+          <small>{{ spaces().length | number }} spaces available</small>
+        </span>
+        <span class="space-hero-arrow" aria-hidden="true">›</span>
+      </button>
+    </section>
+
+    <button class="primary-action" type="button" (click)="addFolder()" [disabled]="isAddingFolder()">
+      <span aria-hidden="true">+</span>
+      Add folder
+    </button>
+
     <nav class="primary-nav" aria-label="Moments sections">
       <button class="nav-row" type="button" [class.active]="activeView() === 'library' && !isSettingsOpen()" (click)="showView('library')"><span aria-hidden="true">▣</span> Library</button>
       <button class="nav-row" type="button" [class.active]="activeView() === 'favorites' && !isSettingsOpen()" (click)="showView('favorites')"><span aria-hidden="true">♥</span> Favorites <small>{{ favoriteCount() }}</small></button>
@@ -34,14 +54,6 @@
       <button class="nav-row" type="button" [class.active]="activeView() === 'imports' && !isSettingsOpen()" (click)="showView('imports')"><span aria-hidden="true">⇪</span> Imports</button>
       <button class="nav-row" type="button" [class.active]="isSettingsOpen()" (click)="openSettings()"><span aria-hidden="true">⚙</span> Settings</button>
     </nav>
-
-    <button class="primary-action" type="button" (click)="addFolder()" [disabled]="isAddingFolder()">
-      <span aria-hidden="true">+</span>
-      Add folder
-    </button>
-
-    <p class="sidebar-label">Space</p>
-    <button class="space-pill" type="button" (click)="openSpaceMenu($event)">{{ currentSpaceName() }}</button>
 
     <p class="sidebar-label">Folders</p>
     <nav class="folder-list" aria-label="Folders">
