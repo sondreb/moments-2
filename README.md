@@ -38,7 +38,7 @@ Release builds require these GitHub repository settings:
 
 - `TAURI_SIGNING_PRIVATE_KEY` secret
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secret, if your updater private key uses one
-- `MOMENTS_UPDATER_PUBLIC_KEY` repository variable
+- `MOMENTS_UPDATER_PUBLIC_KEY` repository variable or secret
 
 Published releases expose in-app update checks, download progress, and install support in the desktop Settings view.
 
@@ -56,7 +56,7 @@ That command prints the public key and writes the private key file. Store them l
 
 - `TAURI_SIGNING_PRIVATE_KEY`: contents of the generated private key file
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: the password you entered when creating the key, if any
-- `MOMENTS_UPDATER_PUBLIC_KEY`: the public key printed by the signer command
+- `MOMENTS_UPDATER_PUBLIC_KEY`: the public key printed by the signer command, stored as either a repository variable or a secret
 
 ### Android keystore secrets
 

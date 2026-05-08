@@ -141,11 +141,18 @@ jobs:
       - name: Generate release updater config
         shell: pwsh
         env:
-          MOMENTS_UPDATER_PUBLIC_KEY: ${{ vars[format('{0}', 'MOMENTS_UPDATER_PUBLIC_KEY')] }}
+          MOMENTS_UPDATER_PUBLIC_KEY_VAR: ${{ vars[format('{0}', 'MOMENTS_UPDATER_PUBLIC_KEY')] }}
+          MOMENTS_UPDATER_PUBLIC_KEY_SECRET: ${{ secrets[format('{0}', 'MOMENTS_UPDATER_PUBLIC_KEY')] }}
           MOMENTS_UPDATER_ENDPOINT: https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare-release.outputs.release_tag }}/latest.json
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:MOMENTS_UPDATER_PUBLIC_KEY)) {
-            throw "Repository variable MOMENTS_UPDATER_PUBLIC_KEY must be set for signed updater builds."
+          $publicKey = if (-not [string]::IsNullOrWhiteSpace($env:MOMENTS_UPDATER_PUBLIC_KEY_VAR)) {
+            $env:MOMENTS_UPDATER_PUBLIC_KEY_VAR
+          }
+          elseif (-not [string]::IsNullOrWhiteSpace($env:MOMENTS_UPDATER_PUBLIC_KEY_SECRET)) {
+            $env:MOMENTS_UPDATER_PUBLIC_KEY_SECRET
+          }
+          else {
+            throw "Set MOMENTS_UPDATER_PUBLIC_KEY as a repository variable or secret for signed updater builds."
           }
 
           $config = Get-Content "src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json
@@ -154,7 +161,7 @@ jobs:
           }
 
           $config.plugins | Add-Member -Force -NotePropertyName updater -NotePropertyValue ([pscustomobject]@{
-            pubkey = $env:MOMENTS_UPDATER_PUBLIC_KEY
+            pubkey = $publicKey
             endpoints = @($env:MOMENTS_UPDATER_ENDPOINT)
             windows = [pscustomobject]@{
               installMode = "passive"
@@ -177,9 +184,25 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets[format('{0}', 'TAURI_SIGNING_PRIVATE_KEY')] }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets[format('{0}', 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD')] }}
-          MOMENTS_UPDATER_PUBLIC_KEY: ${{ vars[format('{0}', 'MOMENTS_UPDATER_PUBLIC_KEY')] }}
+          MOMENTS_UPDATER_PUBLIC_KEY_VAR: ${{ vars[format('{0}', 'MOMENTS_UPDATER_PUBLIC_KEY')] }}
+          MOMENTS_UPDATER_PUBLIC_KEY_SECRET: ${{ secrets[format('{0}', 'MOMENTS_UPDATER_PUBLIC_KEY')] }}
           MOMENTS_UPDATER_ENDPOINT: https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare-release.outputs.release_tag }}/latest.json
-        run: npm run tauri build -- --config src-tauri/tauri.release.conf.json --target ${{ matrix.target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          public_key="${MOMENTS_UPDATER_PUBLIC_KEY_VAR:-}"
+          if [ -z "$public_key" ]; then
+            public_key="${MOMENTS_UPDATER_PUBLIC_KEY_SECRET:-}"
+          fi
+
+          if [ -z "$public_key" ]; then
+            echo 'Missing MOMENTS_UPDATER_PUBLIC_KEY repository variable or secret.' >&2
+            exit 1
+          fi
+
+          export MOMENTS_UPDATER_PUBLIC_KEY="$public_key"
+          npm run tauri build -- --config src-tauri/tauri.release.conf.json --target ${{ matrix.target }}
 
       - name: Upload platform bundles
         uses: actions/upload-artifact@v4
